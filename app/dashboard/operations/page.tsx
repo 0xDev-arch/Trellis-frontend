@@ -19,6 +19,7 @@ import {
   createAlertRule,
   describeAlertRule,
   isOperationalMetricSample,
+  MAX_OPERATIONAL_METRIC_SAMPLES,
   OPERATIONAL_MEMORY_CRITICAL_RATIO,
   OPERATIONAL_MEMORY_WARNING_RATIO,
   type AlertMetric,
@@ -50,7 +51,6 @@ const METRIC_OPTIONS: ReadonlyArray<{ value: AlertMetric; label: string }> = [
 ];
 
 const ALL_VALUE = 'all';
-const MAX_METRIC_SAMPLES = 60;
 
 type MetricConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'unconfigured';
 
@@ -132,7 +132,7 @@ export default function OperationsDashboardPage() {
     return () => {
       cancelled = true;
     };
-  }, [windowMinutes, setExceptionEvents, reloadToken]);
+  }, [windowMinutes, setExceptionEvents]);
 
   useEffect(() => {
     const baseUrl = process.env.NEXT_PUBLIC_TELEMETRY_WS_URL?.trim();
@@ -169,7 +169,7 @@ export default function OperationsDashboardPage() {
           const frame = JSON.parse(String(event.data)) as Record<string, unknown>;
           if (frame.type !== 'operational.metrics' || !isOperationalMetricSample(frame)) return;
           setMetricSamples((samples) =>
-            appendOperationalMetricSample(samples, frame, MAX_METRIC_SAMPLES),
+            appendOperationalMetricSample(samples, frame, MAX_OPERATIONAL_METRIC_SAMPLES),
           );
         } catch {
           // Ignore malformed frames; the telemetry stream is best-effort.
