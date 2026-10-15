@@ -16,4 +16,5 @@ export * from './config-versioning';
 export * from './emergency-pause';
 export * from './preflight';
 export * from './operation-receipts';
+export * from './abuse-detection';
 export * from './guard';

@@ -79,8 +79,16 @@ if (config) {
 }
 
 const guard = readOrNull('lib/protocol/guard.ts');
-check('guard chains all four subsystems', guard !== null && /runPreflight/.test(guard ?? '') &&
-  /createOrGet/.test(guard ?? ''));
+check('guard chains all protocol safety subsystems', guard !== null && /runPreflight/.test(guard ?? '') &&
+  /evaluateAbuseRisk/.test(guard ?? '') && /createOrGet/.test(guard ?? ''));
+
+const abuseModule = readOrNull('lib/protocol/abuse-detection.ts');
+check('lib/protocol/abuse-detection.ts exists', abuseModule !== null);
+if (abuseModule) {
+  check('evaluateAbuseRisk is exported', /export function evaluateAbuseRisk/.test(abuseModule));
+  check('subscribeAbuseTelemetry is exported', /export function subscribeAbuseTelemetry/.test(abuseModule));
+  check('SIGNAL_EVALUATORS is declared', /export const SIGNAL_EVALUATORS/.test(abuseModule));
+}
 
 const docs = readOrNull('docs/PROTOCOL_SAFETY.md');
 check('docs/PROTOCOL_SAFETY.md exists', docs !== null);

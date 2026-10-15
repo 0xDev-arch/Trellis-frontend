@@ -5,8 +5,8 @@ that guard every high-risk Trellis operation. All modules live in `lib/protocol/
 and compose into one entry point (`executeGuardedOperation`).
 
 ```
-request ─► #178 config compatibility ─► #177 pause gate ─► #175 preflight rules ─► #176 receipt ─► execute
-              (incompatible? block)       (paused? block)    (blocked? refuse)      (created-or-replayed)
+request ─► #178 config compatibility ─► #177 pause gate ─► #175 preflight rules ─► abuse detection ─► #176 receipt ─► execute
+              (incompatible? block)       (paused? block)    (blocked? refuse)    (score/step-up/review)  (created-or-replayed)
 ```
 
 Refused operations never mint receipts and never reach transaction signing.
@@ -19,6 +19,7 @@ Refused operations never mint receipts and never reach transaction signing.
 | `lib/protocol/config-versioning.ts` | #178 | Config registry, semver compatibility verdicts, fail-early validation |
 | `lib/protocol/emergency-pause.ts` | #177 | Scoped pause/resume, boundary enforcement, audit trail |
 | `lib/protocol/preflight.ts` | #175 | Deterministic rule checks → `success` / `warning` / `blocked` |
+| `lib/protocol/abuse-detection.ts` | — | Risk-scored abuse detection, explainable signals, step-up & review quarantine |
 | `lib/protocol/operation-receipts.ts` | #176 | Canonical request fingerprints, replay-safe receipts, permission-checked lookup |
 | `lib/protocol/canonical.ts` | — | Stable serialization shared by fingerprints |
 | `lib/protocol/guard.ts` | — | The composed chain above |
@@ -98,6 +99,42 @@ The verdict folds to `blocked` > `warning` > `success`.
   permission-checked: owners read their own receipts; `maintainer`/`admin` may
   read any (support). Everyone else gets `ReceiptLookupDeniedError`.
 
+## Risk-scored abuse detection for high-impact operations
+
+`lib/protocol/abuse-detection.ts` evaluates high-risk operations before receipts are minted.
+It produces explainable signals with weighted contributions, grades risk from 0 to 100,
+and routes operations through progressive actions:
+
+| Risk Score | Action | Behavior | User Impact |
+| --- | --- | --- | --- |
+| 0 – 39 | `allow` | Normal pass | Low-risk legitimate operations execute seamlessly without interference. |
+| 40 – 69 | `step_up` | Step-up challenge | Requires second factor (hardware wallet, biometric signature, or MFA TOTP). A verified `stepUpProof` converts action to `allow`. |
+| 70 – 89 | `review` | Quarantined | Suspicious cluster of signals held for asynchronous compliance/operator review; returns remediation instructions. |
+| 90 – 100 | `block` | Immediate refusal | Malicious burst scripts or critical anomalies rejected immediately with audit log entry. |
+
+### Explainable Risk Signals
+
+- `HIGH_VELOCITY_BURST` / `BURST_VELOCITY_CRITICAL`: Excessive operation frequency within 1 hour.
+- `MODERATE_FAILURE_RATE` / `HIGH_FAILURE_RATE`: Multiple consecutive failures within 15 minutes.
+- `FRESH_ACCOUNT_SURGE`: Critical actions attempted by accounts created < 24 hours ago.
+- `UNUSUAL_LARGE_VOLUME`: Payout or transfer values exceeding the high-volume threshold (`10,000 XLM`).
+- `FIRST_TIME_BENEFICIARY`: High-value operations targeting unfamiliar destination accounts.
+- `ANONYMIZED_NETWORK_ROUTE`: Operations routed via Tor, public proxies, or anonymizing VPNs.
+- `ANOMALOUS_GEO_LOCATION`: Operation origin differing significantly from baseline history.
+- `GOVERNANCE_PRIVILEGE_ELEVATION`: Sensitive governance updates attempted without admin credentials.
+
+### Operational Edge Cases & Failure Modes
+
+- **Clock Skew:** All evaluations accept an injectable clock (`now`) and calculate relative durations rather than absolute timestamps. Step-up tokens expire after 5 minutes TTL.
+- **Flapping Network/VPN Providers:** When VPN detection is triggered alone (weight 20), risk score remains 20 (< 40), allowing legitimate privacy-conscious users to proceed without challenge. Step-up triggers only when compounded with other risk signals (velocity, unfamiliar recipient, etc.).
+- **Telemetry Disconnection:** If telemetry WebSocket or subscribers fail or drop events, evaluations catch exceptions and continue so security gating is never bypassed by telemetry unavailability.
+
+### Rollback & Recovery Steps
+
+- **Runtime Bypass:** `options.bypassAbuseDetection = true` can be passed to `executeGuardedOperation` to instantly disable abuse evaluation if false positives arise during network outages or major promotional campaigns.
+- **Threshold Tuning:** The `abuseConfig` parameter allows live overrides of `stepUpThreshold`, `reviewThreshold`, `blockThreshold`, and `burstVelocityLimitPerHour` without code redeployment.
+- **Quarantine Resolution:** Quarantined items (`action: 'review'`) record canonical fingerprints, allowing operators to approve or reject items via maintainer dashboard or protocol CLI.
+
 ## Using the composed guard
 
 ```ts
@@ -114,14 +151,17 @@ const result = executeGuardedOperation(
   },
   { configRegistry, pauseManager, receipts },
 );
-// result.receipt is created-or-replayed; PreflightBlockedError means refused.
+// result.receipt is created-or-replayed; PreflightBlockedError or AbuseRiskError means refused.
 ```
 
 ## Validation and tests
 
 ```bash
-# Focused unit tests (all four subsystems + the composed guard)
+# Focused unit tests (protocol safety + abuse detection + guard)
 npx jest tests/lib/protocol --coverage=false
+
+# Standalone executable abuse detection verification
+node scripts/test-abuse-detection.mjs
 
 # Smoke-validate shipped configuration facts
 node scripts/validate-protocol-safety.mjs
@@ -135,7 +175,8 @@ Test coverage map (acceptance criteria → tests):
 | #177 pause, resume, unauthorized resume, audit output | `tests/lib/protocol/emergency-pause.test.ts` |
 | #175 success/warning/failed/stale-state, determinism | `tests/lib/protocol/preflight.test.ts` |
 | #176 fingerprint stability, duplicates, lookup permissions | `tests/lib/protocol/operation-receipts.test.ts` |
-| composed chain, receipt dedup, block-before-receipt | `tests/lib/protocol/guard.test.ts` |
+| Abuse detection: explainable signals, step-up, review, blocking | `tests/lib/protocol/abuse-detection.test.ts`, `scripts/test-abuse-detection.mjs` |
+| composed chain, abuse gating before receipt minting | `tests/lib/protocol/guard.test.ts` |
 
 ## Migration / deployment notes
 
