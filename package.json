@@ -23,7 +23,8 @@
     "analyze": "source-map-explorer .next/static/**/*.js",
     "analyze:budget": "node scripts/check-bundle-budget.mjs",
     "storybook": "storybook dev -p 6006",
-    "build-storybook": "storybook build"
+    "build-storybook": "storybook build",
+    "monitor:journey": "tsx scripts/synthetic-journey-monitor.ts"
   },
   "dependencies": {
     "@asteasolutions/zod-to-openapi": "^6.4.0",
