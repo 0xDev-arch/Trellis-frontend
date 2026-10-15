@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useDeferredValue, useEffect, useMemo, useState } from 'react';
 import Button from '@/components/Button';
 import Card from '@/components/Card';
 import { applyRoleVisibility, eventMatchesFilters } from '@/lib/telemetry/filter';
@@ -8,8 +8,10 @@ import { getTelemetryCapabilities, type TelemetryRole } from '@/lib/telemetry/ro
 import type { TelemetryFilters as TF } from '@/lib/telemetry/types';
 import { TelemetryEventList } from './components/TelemetryEventList';
 import { TelemetryFilters } from './components/TelemetryFilters';
+import { TelemetrySearchControls } from './components/TelemetrySearchControls';
 import { TelemetryRoleBar } from './components/TelemetryRoleBar';
 import { useTelemetryWebSocket } from './hooks/useTelemetryWebSocket';
+import { compileTelemetrySearch, filterTelemetryEvents } from '@/lib/telemetry/search';
 
 const ROLE_STORAGE_KEY = 'telemetry_dashboard_role';
 
@@ -29,7 +31,11 @@ const DEFAULT_FILTERS: TF = {
 export default function AgentTelemetryDashboardPage() {
   const [role, setRole] = useState<TelemetryRole>('viewer');
   const [filters, setFilters] = useState<TF>(DEFAULT_FILTERS);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchIsRegex, setSearchIsRegex] = useState(false);
+  const [activeMatchIndex, setActiveMatchIndex] = useState(0);
   const [hydrated, setHydrated] = useState(false);
+  const deferredSearchQuery = useDeferredValue(searchQuery);
 
   useEffect(() => {
     setRole(readStoredRole());
@@ -63,11 +69,35 @@ export default function AgentTelemetryDashboardPage() {
     return [...new Set([...defaults, ...fromStream])].sort();
   }, [events]);
 
-  const visible = useMemo(() => {
+  const visibleByFilters = useMemo(() => {
     return events
       .filter((e) => eventMatchesFilters(e, filters, caps))
       .map((e) => applyRoleVisibility(e, caps));
   }, [events, filters, caps]);
+
+  const searchPattern = useMemo(
+    () => compileTelemetrySearch(deferredSearchQuery, searchIsRegex),
+    [deferredSearchQuery, searchIsRegex]
+  );
+  const visible = useMemo(
+    () => filterTelemetryEvents(visibleByFilters, searchPattern),
+    [visibleByFilters, searchPattern]
+  );
+  const searchMatches = deferredSearchQuery.trim() ? visible : [];
+  const activeMatch = searchMatches.length ? activeMatchIndex % searchMatches.length : -1;
+  const activeEventId = activeMatch >= 0 ? searchMatches[activeMatch]?.id : null;
+
+  useEffect(() => {
+    setActiveMatchIndex(0);
+  }, [deferredSearchQuery, searchIsRegex, filters, role]);
+
+  const moveMatch = useCallback(
+    (direction: -1 | 1) => {
+      if (!searchMatches.length) return;
+      setActiveMatchIndex((current) => (current + direction + searchMatches.length) % searchMatches.length);
+    },
+    [searchMatches.length]
+  );
 
   const exportJson = useCallback(() => {
     const blob = new Blob([JSON.stringify(visible, null, 2)], { type: 'application/json' });
@@ -160,7 +190,22 @@ export default function AgentTelemetryDashboardPage() {
           />
           <Card>
             <h2 className="text-lg font-medium text-white mb-4">Event stream ({visible.length})</h2>
-            <TelemetryEventList events={visible} />
+            <TelemetrySearchControls
+              query={searchQuery}
+              onQueryChange={setSearchQuery}
+              regex={searchIsRegex}
+              onRegexChange={setSearchIsRegex}
+              matchCount={searchMatches.length}
+              activeMatch={Math.max(0, activeMatch)}
+              onPrevious={() => moveMatch(-1)}
+              onNext={() => moveMatch(1)}
+              error={searchPattern.error}
+            />
+            <TelemetryEventList
+              events={visible}
+              searchPattern={searchPattern.regex}
+              activeEventId={activeEventId}
+            />
           </Card>
         </div>
       </div>
