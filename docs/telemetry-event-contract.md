@@ -68,5 +68,53 @@ WebRTC is unsupported, ICE does not complete, or no producer peer is connected, 
 identical on both paths.
 
 Connection state, the active transport, and the reason for any fallback are exposed by `useTelemetryStream` (and its
-`useTelemetryWebSocket` compatibility wrapper). Configuration lives in `NEXT_PUBLIC_TELEMETRY_WEBRTC`,
+useTelemetryWebSocket compatibility wrapper). Configuration lives in `NEXT_PUBLIC_TELEMETRY_WEBRTC`,
 `NEXT_PUBLIC_TELEMETRY_STUN_URLS`, `NEXT_PUBLIC_TELEMETRY_TURN_URL`, and `NEXT_PUBLIC_TELEMETRY_ICE_SERVERS`.
+
+## Operational Metadata Classification & Retention Enforcement
+
+To prevent telemetry metadata from expanding into long-term tracking or holding unnecessary operational state, operational metadata is classified and bounded by deterministic retention policies:
+
+### Metadata Classification Tiers
+
+| Tier | Scope & Contents | Retention Window | Max Capacity |
+| --- | --- | --- | --- |
+| `PUBLIC` | Heartbeats, aggregated health indicators, non-identifying status signals. | 30 days (default) | 1,000 events |
+| `OPERATIONAL` | Task lifecycle events (`task_started`, `task_completed`), non-identifying operation counters. | 7 days | 500 events |
+| `SENSITIVE` | Errors, warnings, critical traces, bounded diagnostic error codes. | 24 hours | 200 events |
+| `RESTRICTED` | Disallowed/PII keys (tokens, passwords, keys, seeds, cookies, PII). | 0 ms (Immediate Purge) | 0 (Never stored) |
+
+### Minimization Review
+
+Before operational metadata is admitted into local storage or buffers, `reviewAndMinimizeMetadata` enforces:
+1. **Allowlist Schema Check**: Only allowed payload fields (`correlationId`, `taskKind`, `state`, `code`, `message`) are retained; any extraneous or unexpected fields are discarded.
+2. **Key Denial Pattern**: Restricted keys (e.g. `password`, `secret`, `token`, `api_key`, `seed`, `private_key`) are stripped immediately.
+3. **Value Redaction**: Any embedded email addresses, Stellar secret seeds (`S...`), or base64 token blobs within message strings are redacted with standardized tokens (`[redacted_email]`, `[redacted_stellar_seed]`, `[redacted_secret]`).
+4. **Retention Timestamp**: An explicit expiration timestamp `expiresAt` is attached according to the event's classification tier.
+
+### Retention Enforcement & Testable Deletion
+
+The `OperationalMetadataRetentionStore` manages metadata lifecycle:
+- **`enforceRetention(now)`**: Scans stored metadata, deletes records whose `expiresAt <= now`, and creates audit log records (`expired`).
+- **`deleteRecord(id, reason)`**: Provides testable and programmatic deletion of single operational metadata entries with audit tracking (`manual`).
+- **`purgeClassification(tier)`**: Purges all records of a given classification tier on demand during incident containment (`purge_classification`).
+- **`enforceTierCapacity(tier)`**: Enforces FIFO/LRU eviction when tier capacity limits are reached (`quota_exceeded`).
+
+### Operational Edge Cases & Failure Modes
+
+1. **Clock Skew or Client Time Jumps**:
+   - *Failure Mode*: Client system clock adjustments or jumps forward could prematurely expire valid operational records; backward jumps could delay expiration.
+   - *Mitigation*: Retention enforcement calculates relative windows at ingestion using monotonic elapsed timestamps where available, and stores explicit UTC epoch expiration stamps.
+2. **Buffer/Storage Overload During Burst Traffic**:
+   - *Failure Mode*: Rapid spikes in error events could exhaust memory or storage quotas.
+   - *Mitigation*: Tier-based capacity limits (`maxEntries`) immediately evict oldest records under the same classification before quota breach occurs.
+3. **Unexpected Payload Field Ingestion**:
+   - *Failure Mode*: An upstream producer introduces non-contract debugging properties.
+   - *Mitigation*: The strict minimization allowlist automatically drops unauthorized fields without breaking the ingestion pipeline or terminating the stream.
+
+### Rollback and Recovery Steps
+
+- **Disabling Retention Pruning**: In case of emergency troubleshooting where historical events must be temporarily preserved, set tier retention windows to `Infinity` via `store.setPolicy(tier, { ...policy, retentionWindowMs: Infinity })`.
+- **Restoring Dropped Metadata**: Minimization is applied at ingestion defense-in-depth; to roll back minimization policies, adjust `ALLOWED_PAYLOAD_FIELDS` in `lib/telemetry/minimizationReview.ts` to accommodate newly standardized contract fields.
+- **Rollback**: Changes to classification rules and retention store remain fully backwards compatible with `TelemetryEvent` and legacy subscriber hooks. Reverting commits restores previous passthrough behavior without requiring database or migration runs.
+

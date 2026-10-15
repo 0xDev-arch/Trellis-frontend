@@ -81,6 +81,8 @@ export interface UseTelemetryStreamResult {
   reconnect: () => void;
   clearEvents: () => void;
   usingMock: boolean;
+  enforceRetention: () => { purgedCount: number; remainingCount: number };
+  deleteEvent: (id: string) => boolean;
 }
 
 /**
@@ -222,6 +224,35 @@ export function useTelemetryStream(role: TelemetryRole): UseTelemetryStreamResul
 
   const clearEvents = useCallback(() => setEvents([]), []);
 
+  const enforceRetention = useCallback(() => {
+    const now = Date.now();
+    let purgedCount = 0;
+    setEvents((prev) => {
+      const retained = prev.filter((e) => {
+        if (e.expiresAt && e.expiresAt <= now) {
+          purgedCount++;
+          return false;
+        }
+        return true;
+      });
+      return retained;
+    });
+    return { purgedCount, remainingCount: events.length - purgedCount };
+  }, [events.length]);
+
+  const deleteEvent = useCallback((id: string) => {
+    let existed = false;
+    setEvents((prev) => {
+      const idx = prev.findIndex((e) => e.id === id);
+      if (idx !== -1) {
+        existed = true;
+        return prev.filter((e) => e.id !== id);
+      }
+      return prev;
+    });
+    return existed;
+  }, []);
+
   const status = useMemo(() => toLegacyTelemetryStatus(connection), [connection]);
 
   return {
@@ -234,5 +265,7 @@ export function useTelemetryStream(role: TelemetryRole): UseTelemetryStreamResul
     reconnect: connect,
     clearEvents,
     usingMock,
+    enforceRetention,
+    deleteEvent,
   };
 }
