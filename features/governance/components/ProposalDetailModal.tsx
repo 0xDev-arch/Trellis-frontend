@@ -6,6 +6,9 @@ import { compareLinearVsQuadraticVotes } from '../utils/quadraticVoting';
 import { LinearVsQuadraticComparison } from './LinearVsQuadraticComparison';
 import { QuadraticVoteDistributionChart } from './QuadraticVoteDistributionChart';
 import { ProposalExecutionTimeline } from './ProposalExecutionTimeline';
+import { MultisigTransactionBuilder } from './MultisigTransactionBuilder';
+import { getNetworkPassphrase } from '@/lib/stellar';
+import { buildTreasurySpendEnvelope } from '@/lib/governance/multisig';
 import type { SybilVerificationResult } from '../utils/sybilResistance';
 
 interface ProposalDetailModalProps {
@@ -98,6 +101,23 @@ export function ProposalDetailModal({
       minQuorumRatio: config.minQuorumRatio,
     });
   }, [votes, proposal, config]);
+
+  const initialXdr = useMemo(() => {
+    if (proposal.action?.type === 'treasury_spend' && config.treasuryAccount) {
+      try {
+        return buildTreasurySpendEnvelope({
+          networkPassphrase: getNetworkPassphrase(config.network),
+          treasuryAccount: config.treasuryAccount,
+          destination: proposal.action.destination,
+          amount: proposal.action.amount,
+          memo: proposal.action.memo,
+        });
+      } catch {
+        return '';
+      }
+    }
+    return '';
+  }, [proposal, config]);
 
   const canVote = proposal.status === 'active';
   const isSybilVerified = userVotingPower?.sybilStatus?.isVerified ?? true;
@@ -249,6 +269,27 @@ export function ProposalDetailModal({
 
           {/* On-chain execution audit timeline */}
           <ProposalExecutionTimeline proposal={proposal} network={config.network} />
+
+          {/* Soroban DAO Treasury Multi-Sig Execution */}
+          {proposal.type === 'treasury_spend' && (
+            <div className="pt-2">
+              <MultisigTransactionBuilder
+                initialXdr={initialXdr}
+                networkPassphrase={getNetworkPassphrase(config.network)}
+                signers={
+                  config.treasuryMultisig?.signers || [
+                    proposal.creator,
+                    config.governanceAccount,
+                    config.treasuryAccount,
+                  ]
+                }
+                threshold={config.treasuryMultisig?.threshold || 2}
+                treasuryAccount={config.treasuryAccount}
+                proposalId={proposal.id}
+                proposalTitle={proposal.title}
+              />
+            </div>
+          )}
         </div>
 
         {/* Modal Footer / Voting Actions */}
