@@ -48,8 +48,24 @@ export default function AgentTelemetryDashboardPage() {
   }, [role, hydrated]);
 
   const caps = useMemo(() => getTelemetryCapabilities(role), [role]);
-  const { events, status, lastError, reconnect, clearEvents, usingMock, transport, fallbacks } =
-    useTelemetryWebSocket(role);
+  const {
+    events,
+    status,
+    lastError,
+    reconnect,
+    clearEvents,
+    usingMock,
+    transport,
+    fallbacks,
+    enforceRetention,
+    deleteEvent,
+  } = useTelemetryWebSocket(role);
+  const [retentionSummary, setRetentionSummary] = useState<{ purged: number; timestamp: number } | null>(null);
+
+  const handleEnforceRetention = useCallback(() => {
+    const res = enforceRetention();
+    setRetentionSummary({ purged: res.purgedCount, timestamp: Date.now() });
+  }, [enforceRetention]);
 
   useEffect(() => {
     if (!caps.canFilterByAgent && filters.agentRef) {
@@ -168,9 +184,14 @@ export default function AgentTelemetryDashboardPage() {
                 Reconnect
               </Button>
               {(role === 'operator' || role === 'admin') && (
-                <Button type="button" variant="outline" size="sm" onClick={clearEvents}>
-                  Clear buffer
-                </Button>
+                <>
+                  <Button type="button" variant="outline" size="sm" onClick={handleEnforceRetention}>
+                    Enforce Retention
+                  </Button>
+                  <Button type="button" variant="outline" size="sm" onClick={clearEvents}>
+                    Clear buffer
+                  </Button>
+                </>
               )}
               {caps.canExport && (
                 <Button type="button" size="sm" onClick={exportJson}>
@@ -179,6 +200,12 @@ export default function AgentTelemetryDashboardPage() {
               )}
             </div>
           </div>
+          {retentionSummary && (
+            <p className="text-xs text-trellis-amber mt-2">
+              Retention sweep executed at {new Date(retentionSummary.timestamp).toLocaleTimeString()}:{' '}
+              {retentionSummary.purged} expired operational records purged.
+            </p>
+          )}
         </Card>
 
         <div className="grid gap-6 lg:grid-cols-[minmax(0,320px)_1fr]">
@@ -205,6 +232,7 @@ export default function AgentTelemetryDashboardPage() {
               events={visible}
               searchPattern={searchPattern.regex}
               activeEventId={activeEventId}
+              onDeleteEvent={role === 'operator' || role === 'admin' ? deleteEvent : undefined}
             />
           </Card>
         </div>

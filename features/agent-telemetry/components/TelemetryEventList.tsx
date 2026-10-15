@@ -43,10 +43,11 @@ interface Props {
   events: TelemetryEvent[];
   searchPattern?: RegExp | null;
   activeEventId?: string | null;
+  onDeleteEvent?: (id: string) => void;
 }
 
 export const TelemetryEventList = React.memo(
-  ({ events, searchPattern = null, activeEventId = null }: Props) => {
+  ({ events, searchPattern = null, activeEventId = null, onDeleteEvent }: Props) => {
     const viewportRef = useRef<HTMLDivElement>(null);
     const [scrollTop, setScrollTop] = useState(0);
     const [viewportHeight, setViewportHeight] = useState(VIEWPORT_HEIGHT);
@@ -119,6 +120,21 @@ export const TelemetryEventList = React.memo(
                     <span className="text-xs text-gray-400 truncate">
                       <Highlight text={ev.agentRef} pattern={searchPattern} />
                     </span>
+                    {ev.classification && (
+                      <span
+                        className={clsx(
+                          'text-[10px] font-mono px-1 rounded border uppercase tracking-wider',
+                          ev.classification === 'SENSITIVE'
+                            ? 'border-red-500/50 text-red-300 bg-red-950/40'
+                            : ev.classification === 'OPERATIONAL'
+                              ? 'border-blue-500/40 text-blue-300 bg-blue-950/30'
+                              : 'border-emerald-500/40 text-emerald-300 bg-emerald-950/30'
+                        )}
+                        title={`Retention Tier: ${ev.classification}`}
+                      >
+                        {ev.classification}
+                      </span>
+                    )}
                   </div>
                   {details && (
                     <p className="text-xs text-gray-300 mt-1 truncate" title={details}>
@@ -126,9 +142,22 @@ export const TelemetryEventList = React.memo(
                     </p>
                   )}
                 </div>
-                <span className="text-xs uppercase tracking-wide justify-self-start sm:justify-self-end">
-                  <Highlight text={ev.severity} pattern={searchPattern} />
-                </span>
+                <div className="flex items-center gap-2 justify-self-start sm:justify-self-end">
+                  <span className="text-xs uppercase tracking-wide">
+                    <Highlight text={ev.severity} pattern={searchPattern} />
+                  </span>
+                  {onDeleteEvent && (
+                    <button
+                      type="button"
+                      onClick={() => onDeleteEvent(ev.id)}
+                      className="text-[11px] text-gray-400 hover:text-red-300 px-1.5 py-0.5 rounded border border-gray-700 hover:border-red-500/40 transition-colors"
+                      title="Testable manual deletion of this operational metadata record"
+                      aria-label={`Delete event ${ev.id}`}
+                    >
+                      Delete
+                    </button>
+                  )}
+                </div>
               </li>
             );
           })}
