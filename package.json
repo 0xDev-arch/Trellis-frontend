@@ -22,6 +22,7 @@
     "telemetry:ws": "node scripts/telemetry-ws-server.mjs",
     "analyze": "source-map-explorer .next/static/**/*.js",
     "analyze:budget": "node scripts/check-bundle-budget.mjs",
+    "test:resource-budgets": "node scripts/check-resource-budgets.mjs",
     "storybook": "storybook dev -p 6006",
     "build-storybook": "storybook build",
     "monitor:journey": "tsx scripts/synthetic-journey-monitor.ts"
