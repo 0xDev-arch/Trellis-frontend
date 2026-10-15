@@ -16,6 +16,11 @@ import {
   type SubscribeDomainEventOptions,
 } from './types';
 import { DOMAIN_EVENT_VERSION_PATTERN } from './types';
+import {
+  DEFAULT_RETRY_POLICY,
+  computeBackoffMs,
+  deadLetterQueue as sharedDeadLetterQueue,
+} from './dlq';
 
 /**
  * Consumer side of the domain event contract.
@@ -35,7 +40,7 @@ import { DOMAIN_EVENT_VERSION_PATTERN } from './types';
 export type DomainEventHandler<TName extends RegisteredEventName> = (
   payload: EventPayloadFor<TName>,
   envelope: DomainEventEnvelope<EventPayloadFor<TName>>,
-) => void;
+) => void | Promise<void>;
 
 export interface ParseDomainEventOptions {
   /**
@@ -258,7 +263,68 @@ function deliver<TName extends RegisteredEventName>(
     return;
   }
 
-  handler(result.payload as EventPayloadFor<TName>, result.envelope as DomainEventEnvelope<EventPayloadFor<TName>>);
+  runWithRetry(name, result.envelope, handler, options);
+}
+
+/**
+ * Run the handler; on a throw or rejection retry with exponential backoff
+ * (default 2s, 4s, 8s) and, once retries are exhausted, capture the envelope
+ * in the dead letter queue instead of losing it.
+ */
+function runWithRetry<TName extends RegisteredEventName>(
+  name: TName,
+  envelope: DomainEventEnvelope<unknown>,
+  handler: DomainEventHandler<TName>,
+  options: SubscribeDomainEventOptions<TName>,
+): void {
+  const policy = { ...DEFAULT_RETRY_POLICY, ...options.retry };
+  const queue = options.deadLetterQueue ?? sharedDeadLetterQueue;
+  const schedule = options.scheduler ?? ((run: () => void, delay: number) => void setTimeout(run, delay));
+  const subscriber = options.label ?? name;
+
+  const invoke = () =>
+    handler(
+      envelope.payload as EventPayloadFor<TName>,
+      envelope as DomainEventEnvelope<EventPayloadFor<TName>>,
+    );
+
+  const attempt = async (n: number): Promise<void> => {
+    try {
+      await invoke();
+    } catch (error) {
+      if (n <= policy.maxRetries) {
+        schedule(() => void attempt(n + 1), computeBackoffMs(n, policy));
+        return;
+      }
+      queue.capture({
+        subscriber,
+        eventName: name,
+        version: envelope.version,
+        envelope,
+        error: error instanceof Error ? error.message : String(error),
+        attempts: n,
+      });
+    }
+  };
+
+  void attempt(1);
+}
+
+/** Register a replayer so DLQ entries can be re-triggered against this handler. */
+function registerReplay<TName extends RegisteredEventName>(
+  name: TName,
+  handler: DomainEventHandler<TName>,
+  options: SubscribeDomainEventOptions<TName>,
+): () => void {
+  const queue = options.deadLetterQueue ?? sharedDeadLetterQueue;
+  return queue.registerReplayer(options.label ?? name, async (raw) => {
+    const parsed = parseDomainEvent(raw, { name });
+    if (parsed.status === 'rejected') throw new Error(parsed.issues.join('; '));
+    await handler(
+      parsed.payload as EventPayloadFor<TName>,
+      parsed.envelope as DomainEventEnvelope<EventPayloadFor<TName>>,
+    );
+  });
 }
 
 /** Compare two semver strings. Returns -1, 0, or 1. */
@@ -303,8 +369,10 @@ export function subscribeDomainEvent<TName extends RegisteredEventName>(
   };
 
   target.addEventListener(name, listener);
+  const unregisterReplay = registerReplay(name, handler, options);
 
   return () => {
+    unregisterReplay();
     target.removeEventListener(name, listener);
   };
 }
@@ -329,8 +397,10 @@ export function subscribeDomainChannel<TName extends RegisteredEventName>(
   };
 
   channel.addEventListener('message', listener);
+  const unregisterReplay = registerReplay(name, handler, options);
 
   return () => {
+    unregisterReplay();
     channel.removeEventListener('message', listener);
   };
 }

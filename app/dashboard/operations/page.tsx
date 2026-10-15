@@ -34,6 +34,7 @@ import {
   duplicateRequestRate,
 } from '@/lib/idempotency';
 import { useApiMetricsStore } from '@/store/apiMetricsStore';
+import { DeadLetterPanel } from './DeadLetterPanel';
 
 const MINUTE_MS = 60 * 1000;
 
@@ -703,6 +704,7 @@ export default function OperationsDashboardPage() {
           </div>
         </section>
       </div>
+        <div className="mx-auto max-w-6xl"><DeadLetterPanel /></div>
     </main>
   );
 }

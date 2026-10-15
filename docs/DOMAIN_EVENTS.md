@@ -266,6 +266,24 @@ with `npm test`.
 
 ---
 
+## Handler failures: retry and dead letter queue
+
+A subscriber handler that throws (or returns a rejected promise) is retried
+with exponential backoff: 3 retries after 2s, 4s and 8s by default. Override
+with the `retry` subscription option (`{ maxRetries, baseDelayMs }`).
+
+When retries are exhausted the validated envelope is captured in the dead
+letter queue (`lib/domain-events/dlq.ts`, persisted to `localStorage`) with
+the error and attempt count, so it is never silently lost.
+
+Maintainers can inspect the payload and **Replay** or **Discard** entries from
+the "Failed domain events" panel on `/dashboard/operations`. Replay re-runs the
+handler of the live subscriber (matched by `label`, falling back to the event
+name) once, without retries; if it fails again the entry stays in the queue.
+Give subscribers distinct `label`s if more than one handles the same event.
+
+---
+
 ## Not yet under schema control
 
 These boundaries still carry untyped messages. Do not assume they validate.
