@@ -136,4 +136,44 @@ describe('guarded operation chain (#175 + #176 + #177 + #178)', () => {
     expect(result.preflight.status).toBe('warning');
     expect(result.receipt).not.toBeNull();
   });
+
+  it('triggers step-up challenge error when abuse risk is elevated and does not mint receipt', () => {
+    const { options, receiptStore } = makeGuard();
+    expect(() =>
+      executeGuardedOperation(
+        {
+          ...baseRequest,
+          historySnapshot: {
+            operationCountLastHour: 15,
+            failedAttemptsLast15Minutes: 3,
+          },
+        },
+        options,
+      ),
+    ).toThrow();
+    expect(receiptStore.size).toBe(0);
+  });
+
+  it('allows high-risk operation with valid stepUpProof and mints receipt', () => {
+    const { options, receiptStore } = makeGuard();
+    const result = executeGuardedOperation(
+      {
+        ...baseRequest,
+        historySnapshot: {
+          operationCountLastHour: 15,
+          failedAttemptsLast15Minutes: 3,
+        },
+        stepUpProof: {
+          token: 'valid-token',
+          verified: true,
+          challengeType: 'mfa_totp',
+        },
+      },
+      options,
+    );
+    expect(result.blocked).toBe(false);
+    expect(result.receipt).not.toBeNull();
+    expect(receiptStore.size).toBe(1);
+    expect(result.abuseEvaluation?.action).toBe('allow');
+  });
 });

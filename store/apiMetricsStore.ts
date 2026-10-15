@@ -10,6 +10,10 @@ import {
   type IdempotencyTelemetryCounters,
   type IdempotencyTelemetryEvent,
 } from '@/lib/idempotency';
+import {
+  subscribeAbuseTelemetry,
+  type AbuseTelemetryEvent,
+} from '@/lib/protocol/abuse-detection';
 import { recordMetricPoint } from '@/lib/metric-definitions';
 import { createPersistStorage } from './persistence';
 
@@ -17,6 +21,16 @@ import { createPersistStorage } from './persistence';
 const MAX_EXCEPTION_EVENTS = 500;
 /** Bound the idempotency event buffer the same way. */
 const MAX_IDEMPOTENCY_EVENTS = 500;
+/** Bound the abuse detection event buffer. */
+const MAX_ABUSE_EVENTS = 500;
+
+export interface AbuseTelemetryCounters {
+  totalEvaluations: number;
+  lowRiskAllowed: number;
+  stepUpChallenges: number;
+  quarantinedReviews: number;
+  criticalBlocks: number;
+}
 
 interface ApiMetricsState {
   totalRequests: number;
@@ -30,6 +44,10 @@ interface ApiMetricsState {
   idempotency: IdempotencyTelemetryCounters;
   /** Recent idempotency events, oldest first, for the hit-rate chart. */
   idempotencyEvents: IdempotencyTelemetryEvent[];
+  /** Abuse detection telemetry counters */
+  abuse: AbuseTelemetryCounters;
+  /** Recent abuse detection events */
+  abuseEvents: AbuseTelemetryEvent[];
   hasHydrated: boolean;
 }
 
@@ -51,6 +69,9 @@ interface ApiMetricsActions {
   /** Counts one idempotency outcome and keeps the newest 500 events. */
   recordIdempotencyEvent: (event: IdempotencyTelemetryEvent) => void;
   clearIdempotencyTelemetry: () => void;
+  /** Counts one abuse detection outcome and keeps the newest 500 events. */
+  recordAbuseEvent: (event: AbuseTelemetryEvent) => void;
+  clearAbuseTelemetry: () => void;
   setHydrated: (hydrated: boolean) => void;
 }
 
@@ -62,6 +83,14 @@ const emptyIdempotencyCounters = (): IdempotencyTelemetryCounters => ({
   idempotency_collisions: 0,
   idempotency_retries: 0,
   idempotency_expired: 0,
+});
+
+const emptyAbuseCounters = (): AbuseTelemetryCounters => ({
+  totalEvaluations: 0,
+  lowRiskAllowed: 0,
+  stepUpChallenges: 0,
+  quarantinedReviews: 0,
+  criticalBlocks: 0,
 });
 
 const COUNTER_FOR_KIND: Partial<Record<IdempotencyTelemetryEvent['kind'], keyof IdempotencyTelemetryCounters>> = {
@@ -81,6 +110,8 @@ const initialApiMetricsState: ApiMetricsState = {
   alertRules: [...DEFAULT_ALERT_RULES],
   idempotency: emptyIdempotencyCounters(),
   idempotencyEvents: [],
+  abuse: emptyAbuseCounters(),
+  abuseEvents: [],
   hasHydrated: false,
 };
 
@@ -134,6 +165,23 @@ export const useApiMetricsStore = create<ApiMetricsStore>()(
         }),
       clearIdempotencyTelemetry: () =>
         set({ idempotency: emptyIdempotencyCounters(), idempotencyEvents: [] }),
+      recordAbuseEvent: (event) =>
+        set((state) => {
+          const abuse = {
+            ...state.abuse,
+            totalEvaluations: state.abuse.totalEvaluations + 1,
+            lowRiskAllowed: state.abuse.lowRiskAllowed + (event.action === 'allow' ? 1 : 0),
+            stepUpChallenges: state.abuse.stepUpChallenges + (event.action === 'step_up' ? 1 : 0),
+            quarantinedReviews: state.abuse.quarantinedReviews + (event.action === 'review' ? 1 : 0),
+            criticalBlocks: state.abuse.criticalBlocks + (event.action === 'block' ? 1 : 0),
+          };
+          return {
+            abuse,
+            abuseEvents: [...state.abuseEvents, event].slice(-MAX_ABUSE_EVENTS),
+          };
+        }),
+      clearAbuseTelemetry: () =>
+        set({ abuse: emptyAbuseCounters(), abuseEvents: [] }),
       setHydrated: (hydrated) => set({ hasHydrated: hydrated }),
     }),
     {
@@ -148,6 +196,8 @@ export const useApiMetricsStore = create<ApiMetricsStore>()(
         lastRequestAt: state.lastRequestAt,
         idempotency: state.idempotency,
         idempotencyEvents: state.idempotencyEvents,
+        abuse: state.abuse,
+        abuseEvents: state.abuseEvents,
       }),
       migrate: (persistedState) => {
         if (!persistedState || typeof persistedState !== 'object') {
@@ -163,6 +213,12 @@ export const useApiMetricsStore = create<ApiMetricsStore>()(
           if (isCount(counters[key])) idempotency[key] = counters[key] as number;
         }
 
+        const abuseCounters = state.abuse ?? ({} as Partial<AbuseTelemetryCounters>);
+        const abuse = emptyAbuseCounters();
+        for (const key of Object.keys(abuse) as Array<keyof AbuseTelemetryCounters>) {
+          if (isCount(abuseCounters[key])) abuse[key] = abuseCounters[key] as number;
+        }
+
         return {
           ...initialApiMetricsState,
           totalRequests: isCount(state.totalRequests) ? state.totalRequests : 0,
@@ -175,6 +231,12 @@ export const useApiMetricsStore = create<ApiMetricsStore>()(
             ? state.idempotencyEvents
                 .filter((event) => event && typeof event.ts === 'number' && typeof event.kind === 'string')
                 .slice(-MAX_IDEMPOTENCY_EVENTS)
+            : [],
+          abuse,
+          abuseEvents: Array.isArray(state.abuseEvents)
+            ? state.abuseEvents
+                .filter((event) => event && typeof event.timestamp === 'number' && typeof event.action === 'string')
+                .slice(-MAX_ABUSE_EVENTS)
             : [],
         };
       },
@@ -216,6 +278,37 @@ subscribeIdempotencyTelemetry((event) => {
       value: 1,
       timestamp: event.ts,
       attributes: { scope: event.scope, reason: event.reason },
+    });
+  }
+});
+
+/**
+ * Bridges abuse detection telemetry into the metrics store and telemetry exporter.
+ */
+subscribeAbuseTelemetry((event) => {
+  useApiMetricsStore.getState().recordAbuseEvent(event);
+  recordMetricPoint({
+    name: 'abuse.evaluations',
+    kind: 'counter',
+    value: 1,
+    timestamp: event.timestamp,
+    attributes: {
+      operation: event.operation,
+      action: event.action,
+      riskScore: event.riskScore,
+    },
+  });
+  if (event.action !== 'allow') {
+    recordMetricPoint({
+      name: `abuse.${event.action}`,
+      kind: 'counter',
+      value: 1,
+      timestamp: event.timestamp,
+      attributes: {
+        operation: event.operation,
+        riskScore: event.riskScore,
+        primarySignal: event.signals[0]?.code ?? 'unknown',
+      },
     });
   }
 });

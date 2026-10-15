@@ -29,6 +29,13 @@ import {
 } from './preflight';
 import { ReceiptService, type OperationReceipt } from './operation-receipts';
 import type { ProtocolActor, ProtocolEnvironment, ProtocolOperation } from './operations';
+import {
+  evaluateAbuseRisk,
+  AbuseRiskError,
+  type AbuseEvaluationRequest,
+  type AbuseEvaluationResult,
+  type AbuseDetectionConfig,
+} from './abuse-detection';
 
 export interface GuardedOperationRequest {
   readonly operation: ProtocolOperation;
@@ -40,6 +47,12 @@ export interface GuardedOperationRequest {
   readonly configVersions: Readonly<Record<string, string>>;
   /** Extra state snapshot for preflight rules. */
   readonly state?: Partial<PreflightStateSnapshot>;
+  /** Optional client context for abuse detection */
+  readonly clientContext?: AbuseEvaluationRequest['clientContext'];
+  /** Optional historical context for abuse detection */
+  readonly historySnapshot?: AbuseEvaluationRequest['historySnapshot'];
+  /** Optional step-up proof if retrying with step-up verification */
+  readonly stepUpProof?: AbuseEvaluationRequest['stepUpProof'];
 }
 
 export interface GuardedExecutionResult {
@@ -47,6 +60,8 @@ export interface GuardedExecutionResult {
   readonly receipt: OperationReceipt | null;
   /** True when the guard refused the operation (never executed). */
   readonly blocked: boolean;
+  /** Abuse evaluation output when abuse detection is enabled. */
+  readonly abuseEvaluation?: AbuseEvaluationResult;
 }
 
 export interface GuardOptions {
@@ -55,6 +70,10 @@ export interface GuardOptions {
   readonly receipts: ReceiptService;
   now?: () => number;
   extraPreflightRules?: readonly PreflightRule[];
+  /** Optional abuse detection configuration or flag. Enabled by default if config is provided. */
+  abuseConfig?: Partial<AbuseDetectionConfig>;
+  /** Whether to bypass abuse detection (e.g. for low-level tests or trusted pipelines). Defaults to false. */
+  bypassAbuseDetection?: boolean;
 }
 
 /** Thrown when a gate refuses the operation; carries the full preflight result. */
@@ -110,6 +129,32 @@ export function executeGuardedOperation(
     throw new PreflightBlockedError(preflight);
   }
 
+  let abuseEvaluation: AbuseEvaluationResult | undefined;
+  if (!options.bypassAbuseDetection) {
+    abuseEvaluation = evaluateAbuseRisk(
+      {
+        operation: request.operation,
+        environment: request.environment,
+        actorId: request.actorId,
+        actor: request.actor,
+        payload: request.payload,
+        clientContext: request.clientContext,
+        historySnapshot: request.historySnapshot,
+        stateSnapshot: {
+          balances: state.balances,
+          currentAllowanceOk: state.allowanceOk,
+        },
+        stepUpProof: request.stepUpProof,
+      },
+      options.abuseConfig ? { ...DEFAULT_ABUSE_CONFIG, ...options.abuseConfig } : undefined,
+      options.now,
+    );
+
+    if (abuseEvaluation.action !== 'allow') {
+      throw new AbuseRiskError(abuseEvaluation);
+    }
+  }
+
   const { receipt } = options.receipts.createOrGet({
     operation: request.operation,
     environment: request.environment,
@@ -117,7 +162,7 @@ export function executeGuardedOperation(
     payload: request.payload,
   });
 
-  return { preflight, receipt, blocked: false };
+  return { preflight, receipt, blocked: false, abuseEvaluation };
 }
 
 function isSubmittableStatus(status: PreflightResult['status']): boolean {

@@ -105,6 +105,8 @@ export default function OperationsDashboardPage() {
   const removeAlertRule = useApiMetricsStore((state) => state.removeAlertRule);
   const idempotency = useApiMetricsStore((state) => state.idempotency);
   const idempotencyEvents = useApiMetricsStore((state) => state.idempotencyEvents);
+  const abuse = useApiMetricsStore((state) => state.abuse);
+  const abuseEvents = useApiMetricsStore((state) => state.abuseEvents);
 
   useEffect(() => {
     setMounted(true);
@@ -581,6 +583,72 @@ export default function OperationsDashboardPage() {
                 ? 'No idempotent requests recorded yet.'
                 : `${idempotencyEvents.length} recent idempotency event${idempotencyEvents.length === 1 ? '' : 's'} tracked.`}
             </p>
+          </div>
+        </section>
+
+        <section aria-labelledby="abuse-heading" className="mt-10" data-testid="abuse-telemetry">
+          <h2 id="abuse-heading" className="text-2xl font-bold">Risk-scored abuse detection</h2>
+          <p className="mt-1 text-sm text-gray-400">
+            Real-time evaluation of high-impact protocol operations (transfers, claims, mints, governance). Evaluates velocity, failure rates, large volumes, and network anomaly signals.
+          </p>
+
+          <dl className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+            {[
+              { label: 'Total evaluations', value: abuse.totalEvaluations, color: 'text-white' },
+              { label: 'Low-risk allowed', value: abuse.lowRiskAllowed, color: 'text-green-300' },
+              { label: 'Step-up challenges', value: abuse.stepUpChallenges, color: 'text-yellow-300' },
+              { label: 'Quarantined reviews', value: abuse.quarantinedReviews, color: 'text-orange-300' },
+              { label: 'Critical blocks', value: abuse.criticalBlocks, color: 'text-red-300' },
+            ].map((item) => (
+              <div key={item.label} className="rounded-lg border border-trellis-vine/30 bg-trellis-vine/10 p-4">
+                <dt className="text-sm text-gray-300">{item.label}</dt>
+                <dd className={`mt-1 text-2xl font-bold ${item.color}`}>{item.value}</dd>
+              </div>
+            ))}
+          </dl>
+
+          <div className="mt-6 rounded-lg border border-trellis-vine/30 bg-trellis-vine/10 p-5">
+            <h3 className="text-lg font-semibold mb-3">Recent risk-scored activity</h3>
+            {abuseEvents.length === 0 ? (
+              <p className="text-sm text-gray-400">No high-risk operations evaluated in this session yet.</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="min-w-full divide-y divide-trellis-vine/20 text-left text-sm">
+                  <thead>
+                    <tr className="text-gray-400">
+                      <th className="py-2 pr-4 font-semibold">Time</th>
+                      <th className="py-2 pr-4 font-semibold">Operation</th>
+                      <th className="py-2 pr-4 font-semibold">Actor</th>
+                      <th className="py-2 pr-4 font-semibold">Risk score</th>
+                      <th className="py-2 pr-4 font-semibold">Action</th>
+                      <th className="py-2 font-semibold">Primary signals</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-trellis-vine/10">
+                    {abuseEvents.slice(-10).reverse().map((ev, idx) => (
+                      <tr key={`${ev.timestamp}-${idx}`} className="text-gray-300">
+                        <td className="py-2 pr-4 text-xs font-mono">{new Date(ev.timestamp).toLocaleTimeString()}</td>
+                        <td className="py-2 pr-4 font-mono text-trellis-leaf">{ev.operation}</td>
+                        <td className="py-2 pr-4 font-mono text-xs">{ev.actorId}</td>
+                        <td className="py-2 pr-4">
+                          <span className={`inline-block rounded px-2 py-0.5 text-xs font-bold ${ev.riskScore >= 70 ? 'bg-red-500/20 text-red-300' : ev.riskScore >= 40 ? 'bg-yellow-500/20 text-yellow-300' : 'bg-green-500/20 text-green-300'}`}>
+                            {ev.riskScore} / 100
+                          </span>
+                        </td>
+                        <td className="py-2 pr-4">
+                          <span className={`capitalize font-semibold text-xs ${ev.action === 'block' ? 'text-red-400' : ev.action === 'review' ? 'text-orange-400' : ev.action === 'step_up' ? 'text-yellow-400' : 'text-green-400'}`}>
+                            {ev.action.replace('_', ' ')}
+                          </span>
+                        </td>
+                        <td className="py-2 text-xs text-gray-400">
+                          {ev.signals.length === 0 ? 'Normal activity' : ev.signals.map(s => s.code).join(', ')}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         </section>
 
