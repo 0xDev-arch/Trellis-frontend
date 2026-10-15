@@ -495,3 +495,374 @@ export function bugReportToExceptionEvent(report: BugReport): ExceptionEvent {
     code: `bug_report_${report.category}`,
   };
 }
+
+/** Probe outcome shape used across health probe runners. */
+export interface ProbeOutcome {
+  key: string;
+  ok: boolean;
+  latencyMs: number | null;
+  statusCode?: number | null;
+  error?: string | null;
+  skipped?: boolean;
+}
+
+export type ExternalServiceKey = "horizon" | "soroban-rpc" | "ipfs" | "algolia";
+export type ServiceHealthStatus = "healthy" | "degraded" | "down";
+
+export interface ProbeSampleRecord {
+  ts: number;
+  latencyMs: number;
+  success: boolean;
+  statusCode?: number | null;
+  error?: string | null;
+  timedOut?: boolean;
+}
+
+export interface RollingLatencyStats {
+  p50: number;
+  p95: number;
+  p99: number;
+  min: number;
+  max: number;
+  avg: number;
+  samplesCount: number;
+}
+
+export interface ExternalServiceHealth {
+  service: ExternalServiceKey | string;
+  label: string;
+  endpoint: string;
+  status: ServiceHealthStatus;
+  lastCheckedAt: string | null;
+  lastLatencyMs: number | null;
+  rollingLatency: RollingLatencyStats;
+  uptimePercentage: number;
+  consecutiveFailures: number;
+  lastError: string | null;
+}
+
+export interface SyntheticProbeConfig {
+  service: ExternalServiceKey | string;
+  label: string;
+  url: string;
+  method?: "GET" | "HEAD";
+  timeoutMs?: number;
+  degradedLatencyThresholdMs?: number;
+  probeFn?: () => Promise<{
+    success: boolean;
+    latencyMs: number;
+    error?: string;
+    statusCode?: number;
+    timedOut?: boolean;
+  }>;
+}
+
+export const DEFAULT_DEGRADED_LATENCY_THRESHOLD_MS = 1500;
+export const DEFAULT_PROBE_TIMEOUT_MS = 3000;
+export const MAX_PROBE_SAMPLES_PER_SERVICE = 100;
+
+export function computePercentile(values: readonly number[], p: number): number {
+  if (values.length === 0) return 0;
+  if (values.length === 1) return values[0];
+  const sorted = [...values].sort((a, b) => a - b);
+  const index = (p / 100) * (sorted.length - 1);
+  const lower = Math.floor(index);
+  const upper = Math.ceil(index);
+  const weight = index - lower;
+  return Math.round(sorted[lower] * (1 - weight) + sorted[upper] * weight);
+}
+
+export function computeRollingLatency(samples: readonly ProbeSampleRecord[]): RollingLatencyStats {
+  const successfulLatencies = samples
+    .filter((s) => s.success && typeof s.latencyMs === "number" && Number.isFinite(s.latencyMs))
+    .map((s) => s.latencyMs);
+
+  if (successfulLatencies.length === 0) {
+    return { p50: 0, p95: 0, p99: 0, min: 0, max: 0, avg: 0, samplesCount: samples.length };
+  }
+
+  const sum = successfulLatencies.reduce((a, b) => a + b, 0);
+  const avg = Math.round(sum / successfulLatencies.length);
+  const min = Math.min(...successfulLatencies);
+  const max = Math.max(...successfulLatencies);
+
+  return {
+    p50: computePercentile(successfulLatencies, 50),
+    p95: computePercentile(successfulLatencies, 95),
+    p99: computePercentile(successfulLatencies, 99),
+    min,
+    max,
+    avg,
+    samplesCount: samples.length,
+  };
+}
+
+export function evaluateServiceHealth(
+  samples: readonly ProbeSampleRecord[],
+  degradedLatencyThresholdMs = DEFAULT_DEGRADED_LATENCY_THRESHOLD_MS,
+): {
+  status: ServiceHealthStatus;
+  rollingLatency: RollingLatencyStats;
+  uptimePercentage: number;
+  consecutiveFailures: number;
+  lastError: string | null;
+} {
+  if (samples.length === 0) {
+    return {
+      status: "healthy",
+      rollingLatency: { p50: 0, p95: 0, p99: 0, min: 0, max: 0, avg: 0, samplesCount: 0 },
+      uptimePercentage: 100,
+      consecutiveFailures: 0,
+      lastError: null,
+    };
+  }
+
+  const rollingLatency = computeRollingLatency(samples);
+  const successCount = samples.filter((s) => s.success).length;
+  const uptimePercentage = Math.round((successCount / samples.length) * 1000) / 10;
+
+  let consecutiveFailures = 0;
+  let lastError: string | null = null;
+  for (let i = samples.length - 1; i >= 0; i--) {
+    if (!samples[i].success) {
+      consecutiveFailures++;
+      if (!lastError && samples[i].error) {
+        lastError = samples[i].error!;
+      }
+    } else {
+      break;
+    }
+  }
+
+  const recentWindow = samples.slice(-5);
+  const recentTimeouts = recentWindow.filter((s) => s.timedOut).length;
+  const failureRate = (samples.length - successCount) / samples.length;
+
+  let status: ServiceHealthStatus = "healthy";
+
+  if (consecutiveFailures >= 3 || failureRate >= 0.75) {
+    status = "down";
+  } else if (
+    rollingLatency.p95 >= degradedLatencyThresholdMs ||
+    recentTimeouts > 0 ||
+    consecutiveFailures > 0 ||
+    failureRate >= 0.15
+  ) {
+    status = "degraded";
+  }
+
+  return { status, rollingLatency, uptimePercentage, consecutiveFailures, lastError };
+}
+
+export async function executeSyntheticProbe(
+  config: SyntheticProbeConfig,
+  fetchFn?: typeof fetch,
+): Promise<ProbeSampleRecord> {
+  const timeoutMs = config.timeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS;
+  const started = Date.now();
+
+  if (config.probeFn) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const timeoutPromise = new Promise<{
+        success: boolean;
+        latencyMs: number;
+        error?: string;
+        statusCode?: number;
+        timedOut?: boolean;
+      }>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`Probe timed out after ${timeoutMs}ms`)), timeoutMs);
+      });
+
+      const res = await Promise.race([config.probeFn(), timeoutPromise]);
+      return {
+        ts: Date.now(),
+        latencyMs: res.latencyMs ?? (Date.now() - started),
+        success: res.success,
+        statusCode: res.statusCode ?? null,
+        error: res.error ?? null,
+        timedOut: res.timedOut ?? false,
+      };
+    } catch (err: unknown) {
+      const isTimeout = (err as Error)?.message?.includes("timed out");
+      return {
+        ts: Date.now(),
+        latencyMs: timeoutMs,
+        success: false,
+        statusCode: null,
+        error: (err as Error)?.message || "Probe failed",
+        timedOut: isTimeout,
+      };
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  const doFetch = fetchFn ?? (typeof fetch === "function" ? fetch : undefined);
+  if (!doFetch) {
+    return {
+      ts: Date.now(),
+      latencyMs: 0,
+      success: false,
+      statusCode: null,
+      error: "No fetch implementation available",
+      timedOut: false,
+    };
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await doFetch(config.url, {
+      method: config.method ?? "GET",
+      signal: controller.signal,
+      cache: "no-store",
+    });
+    const latencyMs = Date.now() - started;
+    const ok = response.status < 500 && response.status !== 429;
+    return {
+      ts: Date.now(),
+      latencyMs,
+      success: ok,
+      statusCode: response.status,
+      error: ok ? null : `HTTP ${response.status}`,
+      timedOut: false,
+    };
+  } catch (error: unknown) {
+    const latencyMs = Date.now() - started;
+    const isTimeout =
+      (error as { name?: string })?.name === "AbortError" ||
+      (error as Error)?.message?.includes("aborted") ||
+      latencyMs >= timeoutMs;
+
+    return {
+      ts: Date.now(),
+      latencyMs: isTimeout ? timeoutMs : latencyMs,
+      success: false,
+      statusCode: null,
+      error: isTimeout ? `Probe timed out after ${timeoutMs}ms` : (error as Error)?.message || "Probe request failed",
+      timedOut: isTimeout,
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export const DEFAULT_SYNTHETIC_PROBE_TARGETS: readonly SyntheticProbeConfig[] = [
+  {
+    service: "horizon",
+    label: "Stellar Horizon API",
+    url: process.env.NEXT_PUBLIC_STELLAR_HORIZON_URL || "https://horizon-testnet.stellar.org/fee_stats",
+    timeoutMs: 3000,
+    degradedLatencyThresholdMs: 1200,
+  },
+  {
+    service: "soroban-rpc",
+    label: "Stellar Soroban RPC",
+    url: process.env.NEXT_PUBLIC_STELLAR_RPC_URL || "https://soroban-testnet.stellar.org",
+    method: "GET",
+    timeoutMs: 3000,
+    degradedLatencyThresholdMs: 1500,
+  },
+  {
+    service: "ipfs",
+    label: "IPFS Gateway",
+    url: process.env.NEXT_PUBLIC_IPFS_GATEWAY || "https://ipfs.io/ipfs/bafybeifx7yeb55kdqb75",
+    method: "HEAD",
+    timeoutMs: 4000,
+    degradedLatencyThresholdMs: 2000,
+  },
+  {
+    service: "algolia",
+    label: "Algolia Search",
+    url: "https://status.algolia.com/api/v1/status",
+    timeoutMs: 3000,
+    degradedLatencyThresholdMs: 1000,
+  },
+];
+
+export class SyntheticProbeManager {
+  private samples: Map<string, ProbeSampleRecord[]> = new Map();
+  private targets: Map<string, SyntheticProbeConfig> = new Map();
+
+  constructor(initialTargets: readonly SyntheticProbeConfig[] = DEFAULT_SYNTHETIC_PROBE_TARGETS) {
+    for (const target of initialTargets) {
+      this.targets.set(target.service, target);
+      this.samples.set(target.service, []);
+    }
+  }
+
+  registerTarget(target: SyntheticProbeConfig): void {
+    this.targets.set(target.service, target);
+    if (!this.samples.has(target.service)) {
+      this.samples.set(target.service, []);
+    }
+  }
+
+  recordSample(service: string, sample: ProbeSampleRecord): void {
+    const list = this.samples.get(service) ?? [];
+    list.push(sample);
+    if (list.length > MAX_PROBE_SAMPLES_PER_SERVICE) {
+      list.shift();
+    }
+    this.samples.set(service, list);
+  }
+
+  getSamples(service: string): readonly ProbeSampleRecord[] {
+    return this.samples.get(service) ?? [];
+  }
+
+  clearSamples(service?: string): void {
+    if (service) {
+      this.samples.set(service, []);
+    } else {
+      this.samples.clear();
+      for (const key of Array.from(this.targets.keys())) {
+        this.samples.set(key, []);
+      }
+    }
+  }
+
+  async runProbes(fetchFn?: typeof fetch): Promise<ExternalServiceHealth[]> {
+    const results = await Promise.all(
+      Array.from(this.targets.values()).map(async (target) => {
+        const sample = await executeSyntheticProbe(target, fetchFn);
+        this.recordSample(target.service, sample);
+        return this.getServiceHealth(target.service);
+      }),
+    );
+    return results;
+  }
+
+  getServiceHealth(service: string): ExternalServiceHealth {
+    const target = this.targets.get(service);
+    const samples = this.samples.get(service) ?? [];
+    const evaluation = evaluateServiceHealth(
+      samples,
+      target?.degradedLatencyThresholdMs ?? DEFAULT_DEGRADED_LATENCY_THRESHOLD_MS,
+    );
+    const lastSample = samples[samples.length - 1];
+
+    return {
+      service,
+      label: target?.label ?? service,
+      endpoint: target?.url ?? "",
+      status: evaluation.status,
+      lastCheckedAt: lastSample ? new Date(lastSample.ts).toISOString() : null,
+      lastLatencyMs: lastSample ? lastSample.latencyMs : null,
+      rollingLatency: evaluation.rollingLatency,
+      uptimePercentage: evaluation.uptimePercentage,
+      consecutiveFailures: evaluation.consecutiveFailures,
+      lastError: evaluation.lastError,
+    };
+  }
+
+  getAllServicesHealth(): ExternalServiceHealth[] {
+    return Array.from(this.targets.keys()).map((service) => this.getServiceHealth(service));
+  }
+}
+
+/** Global singleton instance for synthetic probes. */
+export const syntheticProbeManager = new SyntheticProbeManager();
+
