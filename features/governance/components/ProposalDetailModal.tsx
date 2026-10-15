@@ -34,7 +34,6 @@ export function ProposalDetailModal({
   userVotingPower,
   isVoting = false,
 }: ProposalDetailModalProps) {
-  if (!isOpen) return null;
 
   // Synthesize or extract individual votes
   const votes = useMemo(() => {
@@ -121,6 +120,8 @@ export function ProposalDetailModal({
 
   const canVote = proposal.status === 'active';
   const isSybilVerified = userVotingPower?.sybilStatus?.isVerified ?? true;
+
+  if (!isOpen) return null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md overflow-y-auto">

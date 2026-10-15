@@ -5,6 +5,7 @@ import {
   bugReportToExceptionEvent,
   buildExceptionTrendReport,
   buildOperationalHealth,
+  syntheticProbeManager,
   type ExceptionEvent,
   type ExceptionFilters,
   type ExceptionKind,
@@ -91,6 +92,10 @@ export async function GET(request: NextRequest) {
   );
 
   const now = Date.now();
+  if (searchParams.get("probe") === "true" || searchParams.get("runProbes") === "true") {
+    await syntheticProbeManager.runProbes();
+  }
+  const externalServices = syntheticProbeManager.getAllServicesHealth();
   const events = getExceptionEvents();
   const exceptionTrend = buildExceptionTrendReport(events, {
     windowMs: windowMinutes * MINUTE_MS,
@@ -104,6 +109,8 @@ export async function GET(request: NextRequest) {
     ...buildOperationalHealth(getBugReports(), now),
     exceptionTrend: { ...exceptionTrend, windowMinutes, bucketMinutes },
     exceptions: events.slice(-MAX_EVENTS_IN_RESPONSE),
+    externalServices,
+    syntheticProbes: externalServices,
   });
 }
 
