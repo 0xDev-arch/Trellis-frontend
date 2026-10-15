@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { TelemetryEvent, TelemetryEventType, TelemetrySeverity } from '@/lib/telemetry/types';
 import { sanitizeTelemetryEvent } from '@/lib/telemetry/sanitize';
+import { TelemetryEventSampler } from '@/lib/telemetry/sampler';
 import type { TelemetryRole } from '@/lib/telemetry/roles';
 import {
   buildTelemetryIceServers,
@@ -19,6 +20,7 @@ import {
 } from '../services/telemetry-connection-machine';
 
 const MAX_BUFFER = 500;
+const MAX_TELEMETRY_EVENTS_PER_SECOND = 30;
 
 function isTelemetryEvent(raw: unknown): raw is TelemetryEvent {
   if (!raw || typeof raw !== 'object') return false;
@@ -95,11 +97,14 @@ export function useTelemetryStream(role: TelemetryRole): UseTelemetryStreamResul
   const transportRef = useRef<TelemetryTransport | null>(null);
   const mockRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const seqRef = useRef(0);
+  const samplerRef = useRef<TelemetryEventSampler | null>(null);
+  if (!samplerRef.current) samplerRef.current = new TelemetryEventSampler(MAX_TELEMETRY_EVENTS_PER_SECOND);
   const roleRef = useRef(role);
   roleRef.current = role;
   const usingMock = !getWsBaseUrl();
 
   const pushEvent = useCallback((ev: TelemetryEvent) => {
+    if (!samplerRef.current?.shouldAccept()) return;
     setEvents((prev) => {
       const next = [sanitizeTelemetryEvent(ev), ...prev];
       return next.slice(0, MAX_BUFFER);

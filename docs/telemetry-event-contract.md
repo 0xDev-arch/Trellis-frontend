@@ -28,7 +28,7 @@ Failures should use a stable `code` such as `wallet_unavailable`, `user_rejected
 
 ## Privacy Boundary
 
-The telemetry sanitizer removes sensitive keys and redacts obvious email and long base64-like values. Producers must still avoid sending passwords, tokens, cookies, IP addresses, names, account IDs, addresses, public keys, private keys, raw transaction payloads, and stack traces. Sanitization is defense in depth, not permission to emit sensitive data.
+The telemetry sanitizer removes sensitive keys and redacts obvious email and long base64-like values. Producers must still avoid sending passwords, tokens, cookies, IP addresses, names, account IDs, addresses, public keys, private keys, raw transaction payloads, and stack traces. Sanitization is defense in depth, not permission to emit sensitive data. The client stream accepts at most 30 events per second and retains at most 500 events; excess events are dropped from the dashboard view. Metric labels use a fixed key allow-list, reject malformed or overlong values, normalize common ID-shaped route segments, and retain at most six dimensions. Prometheus responses are capped at 200 series and 1,000 newest points per series.
 
 ## Metric Export (OTLP)
 
@@ -53,6 +53,12 @@ The client always transmits OTLP/HTTP JSON. A `grpc` protocol value is treated a
 ## Dashboard Queries
 
 The primary operational views should group by `type`, `severity`, `taskKind`, `state`, and `code` only. These bounded dimensions support failure-rate and conversion analysis without creating a high-cardinality or personally identifying metric stream.
+
+## Cardinality and overload operations
+
+Unknown metric label keys and values outside the supported formats are omitted from rendered series. When a collector returns too many series or points, the dashboard keeps the first 200 series and newest 1,000 points per series; inspect the collector query and its label dimensions if expected data is missing. The live telemetry view drops events above its 30-per-second display budget, so it is intended for operational visibility rather than complete audit storage. Persist audit events in the protected server-side system of record.
+
+If a legitimate dashboard dimension is missing, add its key and a bounded value rule to `lib/metrics/sanitize.ts` and cover it with a sanitizer test. If a panel regularly reaches the response caps, reduce cardinality in its PromQL query or increase the exported caps with a documented browser memory budget. Recovery requires no data migration: the limits apply only to client-rendered responses, and reconnecting or reloading resumes the current stream. To roll back, revert the sanitizer and cap changes together; do not disable server-side privacy filtering.
 
 ## Transports
 
