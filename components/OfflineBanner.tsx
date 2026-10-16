@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import PWAManager from '@/lib/pwa-utils';
+import PWAManager, { type OfflineSubmission } from '@/lib/pwa-utils';
 import { subscribeDomainEvent, type DomainEventFallbackContext } from '@/lib/domain-events';
 import { usePWA } from '@/hooks/usePWA';
 
@@ -30,6 +30,7 @@ function reportUnreadableEvent(context: DomainEventFallbackContext): void {
 export default function OfflineBanner() {
   const { isOnline, updateAvailable, skipWaiting } = usePWA();
   const [pending, setPending] = useState(0);
+  const [conflicts, setConflicts] = useState<OfflineSubmission[]>([]);
   const [syncing, setSyncing] = useState(false);
   const [synced, setSynced] = useState(0);
   const [updating, setUpdating] = useState(false);
@@ -45,9 +46,16 @@ export default function OfflineBanner() {
 
   const refreshPending = useCallback(async () => {
     try {
-      setPending(await PWAManager.getInstance().getPendingSubmissionCount());
+      const manager = PWAManager.getInstance();
+      const [count, conflicted] = await Promise.all([
+        manager.getPendingSubmissionCount(),
+        manager.getConflictedSubmissions(),
+      ]);
+      setPending(count);
+      setConflicts(conflicted);
     } catch {
       setPending(0);
+      setConflicts([]);
     }
   }, []);
 
@@ -108,8 +116,9 @@ export default function OfflineBanner() {
   }, [refreshPending]);
 
   const showSyncedMessage = isOnline && pending === 0 && synced > 0;
+  const waitingToSync = Math.max(0, pending - conflicts.length);
 
-  if (isOnline && pending === 0 && !showSyncedMessage && !updateAvailable) {
+  if (isOnline && pending === 0 && conflicts.length === 0 && !showSyncedMessage && !updateAvailable) {
     return null;
   }
 
@@ -142,12 +151,31 @@ export default function OfflineBanner() {
               </p>
             )}
 
-            {pending > 0 && (
+            {waitingToSync > 0 && (
               <p className={isOnline ? undefined : 'mt-0.5 text-xs text-white/70'}>
-                {pending} offline {pending === 1 ? 'change' : 'changes'} waiting to sync
+                {waitingToSync} offline {waitingToSync === 1 ? 'change' : 'changes'} waiting to sync
                 {isOnline ? '' : ' — will send automatically when you reconnect'}.
               </p>
             )}
+
+            {conflicts.map((conflict) => (
+              <div key={conflict.id} className="mt-2 rounded-lg border border-trellis-amber/40 p-2 text-xs">
+                <p className="font-medium">{conflict.label} needs review</p>
+                <p className="mt-1 text-white/70">{conflict.lastError || 'The server state changed before this operation could be sent.'}</p>
+                <div className="mt-2 flex gap-2">
+                  <button
+                    type="button"
+                    onClick={async () => { await PWAManager.getInstance().retryConflictedSubmission(conflict.id); await refreshPending(); }}
+                    className="rounded border border-trellis-leaf/50 px-2 py-1 text-trellis-leaf"
+                  >Retry after reviewing current state</button>
+                  <button
+                    type="button"
+                    onClick={async () => { await PWAManager.getInstance().discardConflictedSubmission(conflict.id); await refreshPending(); }}
+                    className="rounded border border-white/30 px-2 py-1 text-white/80"
+                  >Discard</button>
+                </div>
+              </div>
+            ))}
 
             {showSyncedMessage && (
               <p>
@@ -170,7 +198,7 @@ export default function OfflineBanner() {
         </button>
       )}
 
-      {isOnline && !updateAvailable && pending > 0 && (
+      {isOnline && !updateAvailable && waitingToSync > 0 && (
         <button
           type="button"
           onClick={syncNow}
