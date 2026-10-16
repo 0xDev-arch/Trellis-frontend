@@ -110,6 +110,11 @@ describe('offline queue serialization', () => {
     );
   });
 
+  it('preserves a detected state conflict across refreshes', () => {
+    const conflicted = makeSubmission({ status: 'conflict', lastError: 'HTTP 412' });
+    expect(deserializeOfflineQueue(serializeOfflineQueue([conflicted]))).toEqual([conflicted]);
+  });
+
   it('is tolerant of missing, empty or malformed payloads', () => {
     expect(deserializeOfflineQueue(null)).toEqual([]);
     expect(deserializeOfflineQueue(undefined)).toEqual([]);
@@ -292,6 +297,30 @@ describe('offline queue replay', () => {
     expect(result.synced).toEqual(['sub-2']);
     expect(result.dropped).toEqual(['sub-1']);
     expect(result.remaining).toBe(0);
+    expect(await queue.size()).toBe(0);
+  });
+
+  it('holds stale-state responses for an explicit retry or discard choice', async () => {
+    const queue = createTestQueue();
+    const submission = await queue.enqueue({
+      url: '/api/loan/repay',
+      headers: { 'If-Match': 'version-4' },
+      body: { amount: '10' },
+    });
+    const fetchMock = jest.fn().mockResolvedValue(jsonResponse(412));
+
+    const result = await flushOfflineQueue(queue, fetchMock as unknown as typeof fetch);
+    const held = (await queue.list())[0];
+
+    expect(result.remaining).toBe(1);
+    expect(held).toMatchObject({ id: submission.id, status: 'conflict', attempts: 0 });
+    expect(held.lastError).toContain('HTTP 412');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    await queue.update(submission.id, { status: 'pending', attempts: 0, lastError: '' });
+    const retryFetch = jest.fn().mockResolvedValue(jsonResponse(204));
+    await flushOfflineQueue(queue, retryFetch as unknown as typeof fetch);
+    expect(retryFetch).toHaveBeenCalledTimes(1);
     expect(await queue.size()).toBe(0);
   });
 
