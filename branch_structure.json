@@ -1,0 +1,21 @@
+{
+  "default_branch": "main",
+  "branches": [
+    "feat/issue-242-trellis-frontend-implement-deterministic-chaos",
+    "fix/issue-244-trellis-frontend-create-operator-safe-backfill",
+    "main",
+    "origin"
+  ],
+  "parent": {
+    "feat/issue-242-trellis-frontend-implement-deterministic-chaos": "main",
+    "fix/issue-244-trellis-frontend-create-operator-safe-backfill": "main",
+    "main": null,
+    "origin": "main"
+  },
+  "order": [
+    "main",
+    "feat/issue-242-trellis-frontend-implement-deterministic-chaos",
+    "fix/issue-244-trellis-frontend-create-operator-safe-backfill",
+    "origin"
+  ]
+}
