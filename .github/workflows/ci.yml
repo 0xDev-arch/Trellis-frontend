@@ -44,9 +44,6 @@ jobs:
       - name: Monitor domain invariants
         run: npm run monitor:invariants -- --fail-on error
 
-      - name: Validate domain event schema evolution
-        run: npm run validate:events
-
       - name: Build
         run: npm run build
 
