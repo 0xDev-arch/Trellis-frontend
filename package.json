@@ -4,9 +4,9 @@
   "description": "AI agent marketplace on Stellar, built on the Trellis design system",
   "private": true,
   "scripts": {
-    "dev": "tsx scripts/validate-env.ts && next dev",
-    "build": "tsx scripts/validate-env.ts && tsx scripts/generate-openapi.ts && next build",
-    "start": "tsx scripts/validate-env.ts && next start",
+    "dev": "node init && tsx scripts/validate-env.ts && next dev",
+    "build": "node init && tsx scripts/validate-env.ts && tsx scripts/generate-openapi.ts && next build",
+    "start": "node init && tsx scripts/validate-env.ts && next start",
     "validate:env": "tsx scripts/validate-env.ts",
     "diagnostics": "node scripts/diagnostics.mjs",
     "doctor": "node scripts/diagnostics.mjs",
@@ -30,7 +30,7 @@
     "analyze:budget": "node scripts/check-bundle-budget.mjs",
     "test:resource-budgets": "node scripts/check-resource-budgets.mjs",
     "storybook": "storybook dev -p 6006",
-    "build-storybook": "storybook build",
+    "build-storybook": "node init && storybook build",
     "monitor:journey": "tsx scripts/synthetic-journey-monitor.ts"
   },
   "dependencies": {
