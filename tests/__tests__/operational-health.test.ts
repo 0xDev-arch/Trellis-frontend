@@ -10,8 +10,13 @@ import {
   filterExceptionEvents,
   groupExceptionEvents,
   isOperationalMetricSample,
+  computePercentile,
+  computeRollingLatency,
+  evaluateServiceHealth,
+  executeSyntheticProbe,
+  SyntheticProbeManager,
 } from "@/lib/operational-health";
-import type { ExceptionEvent, OperationalMetricSample } from "@/lib/operational-health";
+import type { ExceptionEvent, OperationalMetricSample, ProbeSampleRecord } from "@/lib/operational-health";
 import type { BugReport } from "@/types/bug-report";
 
 const baseReport: BugReport = {
@@ -281,5 +286,206 @@ describe("bugReportToExceptionEvent", () => {
     });
     expect(JSON.stringify(event)).not.toContain("private@example.com");
     expect(JSON.stringify(event)).not.toContain("private-address");
+  });
+});
+
+describe("synthetic probe rolling percentiles", () => {
+  test("calculates p50, p95, p99 correctly", () => {
+    // Array of 100 values: 10, 20, 30, ... 1000
+    const latencies = Array.from({ length: 100 }, (_, i) => (i + 1) * 10);
+    const p50 = computePercentile(latencies, 50);
+    const p95 = computePercentile(latencies, 95);
+    const p99 = computePercentile(latencies, 99);
+
+    expect(p50).toBeCloseTo(505, 0);
+    expect(p95).toBeCloseTo(951, 0);
+    expect(p99).toBeCloseTo(990, 0);
+  });
+
+  test("handles empty and single element arrays", () => {
+    expect(computePercentile([], 50)).toBe(0);
+    expect(computePercentile([120], 95)).toBe(120);
+  });
+
+  test("computes rolling latency stats including min, max, avg", () => {
+    const samples: ProbeSampleRecord[] = [
+      { ts: Date.now() - 3000, latencyMs: 100, success: true },
+      { ts: Date.now() - 2000, latencyMs: 200, success: true },
+      { ts: Date.now() - 1000, latencyMs: 300, success: true },
+      { ts: Date.now(), latencyMs: 0, success: false, error: "Network timeout", timedOut: true },
+    ];
+
+    const stats = computeRollingLatency(samples);
+    expect(stats.min).toBe(100);
+    expect(stats.max).toBe(300);
+    expect(stats.avg).toBe(200);
+    expect(stats.p50).toBe(200);
+    expect(stats.samplesCount).toBe(4);
+  });
+});
+
+describe("synthetic probe execution and timeout handling", () => {
+  test("records successful probe latency when response is received within timeout", async () => {
+    const mockFetch = jest.fn().mockResolvedValue({
+      status: 200,
+    } as Response);
+
+    const result = await executeSyntheticProbe(
+      {
+        service: "horizon",
+        label: "Horizon API",
+        url: "https://horizon-testnet.stellar.org",
+        timeoutMs: 2000,
+      },
+      mockFetch as unknown as typeof fetch,
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.timedOut).toBe(false);
+    expect(result.statusCode).toBe(200);
+    expect(result.error).toBeNull();
+  });
+
+  test("handles probe timeout gracefully when HTTP request aborts", async () => {
+    const abortError = new Error("The operation was aborted");
+    abortError.name = "AbortError";
+    const mockFetch = jest.fn().mockRejectedValue(abortError);
+
+    const result = await executeSyntheticProbe(
+      {
+        service: "soroban-rpc",
+        label: "Soroban RPC",
+        url: "https://soroban-testnet.stellar.org",
+        timeoutMs: 1000,
+      },
+      mockFetch as unknown as typeof fetch,
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.timedOut).toBe(true);
+    expect(result.error).toContain("timed out");
+  });
+
+  test("handles custom probeFn timeout and failure", async () => {
+    const slowProbeFn = jest.fn().mockImplementation(
+      () => new Promise((resolve) => setTimeout(() => resolve({ success: true, latencyMs: 500 }), 300)),
+    );
+
+    const result = await executeSyntheticProbe({
+      service: "ipfs",
+      label: "IPFS Gateway",
+      url: "https://ipfs.io",
+      timeoutMs: 50,
+      probeFn: slowProbeFn,
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.timedOut).toBe(true);
+    expect(result.error).toContain("timed out");
+  });
+});
+
+describe("evaluateServiceHealth", () => {
+  test("returns healthy when latency is within threshold and all samples succeed", () => {
+    const samples: ProbeSampleRecord[] = Array.from({ length: 10 }, (_, i) => ({
+      ts: Date.now() - i * 1000,
+      latencyMs: 150,
+      success: true,
+    }));
+
+    const health = evaluateServiceHealth(samples, 1500);
+    expect(health.status).toBe("healthy");
+    expect(health.uptimePercentage).toBe(100);
+    expect(health.consecutiveFailures).toBe(0);
+  });
+
+  test("triggers degraded status when p95 response latency exceeds threshold", () => {
+    const samples: ProbeSampleRecord[] = [
+      ...Array.from({ length: 15 }, (_, i) => ({
+        ts: Date.now() - (i + 5) * 1000,
+        latencyMs: 200,
+        success: true,
+      })),
+      ...Array.from({ length: 5 }, (_, i) => ({
+        ts: Date.now() - i * 1000,
+        latencyMs: 2500,
+        success: true,
+      })),
+    ];
+
+    const health = evaluateServiceHealth(samples, 1500);
+    expect(health.status).toBe("degraded");
+    expect(health.rollingLatency.p95).toBeGreaterThanOrEqual(1500);
+  });
+
+  test("triggers degraded status on recent timeout", () => {
+    const samples: ProbeSampleRecord[] = [
+      { ts: Date.now() - 2000, latencyMs: 200, success: true },
+      { ts: Date.now() - 1000, latencyMs: 150, success: true },
+      { ts: Date.now(), latencyMs: 3000, success: false, timedOut: true, error: "Timed out" },
+    ];
+
+    const health = evaluateServiceHealth(samples, 1500);
+    expect(health.status).toBe("degraded");
+    expect(health.lastError).toBe("Timed out");
+  });
+
+  test("triggers down status when 3 or more consecutive failures occur", () => {
+    const samples: ProbeSampleRecord[] = [
+      { ts: Date.now() - 4000, latencyMs: 100, success: true },
+      { ts: Date.now() - 3000, latencyMs: 1000, success: false, error: "Network error" },
+      { ts: Date.now() - 2000, latencyMs: 1000, success: false, error: "Network error" },
+      { ts: Date.now() - 1000, latencyMs: 1000, success: false, error: "Network error" },
+    ];
+
+    const health = evaluateServiceHealth(samples, 1500);
+    expect(health.status).toBe("down");
+    expect(health.consecutiveFailures).toBe(3);
+  });
+});
+
+describe("SyntheticProbeManager", () => {
+  test("maintains rolling samples per service and computes health reports", async () => {
+    const manager = new SyntheticProbeManager([
+      {
+        service: "horizon",
+        label: "Horizon API",
+        url: "https://horizon.example.com",
+        degradedLatencyThresholdMs: 500,
+      },
+      {
+        service: "soroban-rpc",
+        label: "Soroban RPC",
+        url: "https://soroban.example.com",
+        degradedLatencyThresholdMs: 500,
+      },
+      {
+        service: "ipfs",
+        label: "IPFS Gateway",
+        url: "https://ipfs.example.com",
+        degradedLatencyThresholdMs: 500,
+      },
+    ]);
+
+    manager.recordSample("horizon", { ts: Date.now(), latencyMs: 120, success: true });
+    manager.recordSample("soroban-rpc", { ts: Date.now(), latencyMs: 800, success: true });
+    manager.recordSample("ipfs", { ts: Date.now() - 2000, latencyMs: 200, success: true });
+    manager.recordSample("ipfs", { ts: Date.now() - 1000, latencyMs: 220, success: true });
+    manager.recordSample("ipfs", { ts: Date.now(), latencyMs: 2000, success: false, timedOut: true, error: "Timed out" });
+
+    const horizonHealth = manager.getServiceHealth("horizon");
+    expect(horizonHealth.status).toBe("healthy");
+    expect(horizonHealth.rollingLatency.p50).toBe(120);
+
+    const sorobanHealth = manager.getServiceHealth("soroban-rpc");
+    expect(sorobanHealth.status).toBe("degraded");
+
+    const ipfsHealth = manager.getServiceHealth("ipfs");
+    expect(ipfsHealth.status).toBe("degraded");
+    expect(ipfsHealth.lastError).toBe("Timed out");
+
+    const all = manager.getAllServicesHealth();
+    expect(all).toHaveLength(3);
+    expect(all.map((s) => s.service)).toEqual(["horizon", "soroban-rpc", "ipfs"]);
   });
 });

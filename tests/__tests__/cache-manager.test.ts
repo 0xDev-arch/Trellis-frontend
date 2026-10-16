@@ -171,6 +171,45 @@ describe("CacheManager LRU Eviction", () => {
   });
 });
 
+describe("Cache freshness diagnostics", () => {
+  let cacheManager: CacheManager;
+
+  beforeEach(() => {
+    cacheManager = CacheManager.getInstance();
+  });
+
+  afterEach(async () => {
+    await cacheManager.clearCache();
+  });
+
+  it("reports stale entries without exposing their URLs", async () => {
+    const now = Date.now();
+    const cache = await caches.open("Trellis-api");
+    await cache.put(new Request("https://example.com/private?token=secret"), new Response("x", {
+      headers: { "sw-cached-at": String(now - 25 * 60 * 60 * 1000) },
+    }));
+    await cache.put(new Request("https://example.com/unverified"), new Response("y"));
+
+    const diagnostic = (await cacheManager.diagnoseCaches(now)).find((item) => item.type === "api");
+    expect(diagnostic).toMatchObject({ entries: 2, staleEntries: 1, entriesWithoutTimestamp: 1 });
+    expect(JSON.stringify(diagnostic)).not.toContain("secret");
+    expect(diagnostic?.recommendation).toMatch(/remove stale/i);
+  });
+
+  it("removes proven-stale entries while retaining entries with unknown timestamps", async () => {
+    const now = Date.now();
+    const cache = await caches.open("Trellis-api");
+    const stale = new Request("https://example.com/stale");
+    const unknown = new Request("https://example.com/unknown");
+    await cache.put(stale, new Response("stale", { headers: { "sw-cached-at": String(now - 25 * 60 * 60 * 1000) } }));
+    await cache.put(unknown, new Response("unknown"));
+
+    await expect(cacheManager.repairStaleCacheEntries("api", now)).resolves.toBe(1);
+    expect(await cache.match(stale)).toBeUndefined();
+    expect(await cache.match(unknown)).toBeDefined();
+  });
+});
+
 describe("Stale-while-revalidate metadata cache", () => {
   it("returns stale metadata immediately and notifies subscribers after background refresh", async () => {
     const key = `swr-test-${Date.now()}`;

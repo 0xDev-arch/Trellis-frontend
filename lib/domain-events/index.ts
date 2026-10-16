@@ -84,6 +84,17 @@ export {
 } from './emit';
 
 export {
+  DEFAULT_RETRY_POLICY,
+  DLQ_STORAGE_KEY,
+  DeadLetterQueue,
+  computeBackoffMs,
+  deadLetterQueue,
+  type DeadLetterEntry,
+  type DeadLetterInput,
+  type RetryPolicy,
+} from './dlq';
+
+export {
   compareSemver,
   parseDomainEvent,
   subscribeDomainChannel,

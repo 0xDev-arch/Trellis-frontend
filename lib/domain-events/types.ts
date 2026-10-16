@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import type { DeadLetterQueue, RetryPolicy } from './dlq';
+
 /**
  * Stable, versioned contracts for Trellis domain events.
  *
@@ -193,6 +195,12 @@ export interface SubscribeDomainEventOptions<TName extends string = string> {
   acceptVersions?: readonly string[];
   /** Per-subscription event name, only useful for diagnostics. */
   label?: string;
+  /** Override the handler retry/backoff policy (default 3 retries: 2s, 4s, 8s). */
+  retry?: Partial<RetryPolicy>;
+  /** Dead letter queue that receives events whose handler keeps failing. */
+  deadLetterQueue?: DeadLetterQueue;
+  /** Schedules a retry. Injected in tests; defaults to setTimeout. */
+  scheduler?: (run: () => void, delayMs: number) => void;
   readonly __name?: TName;
 }
 

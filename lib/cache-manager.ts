@@ -20,6 +20,15 @@ interface StorageQuota {
   percentage: number;
 }
 
+export interface CacheDiagnostic {
+  type: string;
+  entries: number;
+  staleEntries: number;
+  entriesWithoutTimestamp: number;
+  oldestAgeMs: number | null;
+  recommendation: string;
+}
+
 const STORAGE_QUOTA_THRESHOLD = 0.8;
 const QUOTA_CHECK_INTERVAL_MS = 30000;
 
@@ -355,6 +364,69 @@ class CacheManager {
     }
     
     return stats;
+  }
+
+  /** Inspect this browser's Trellis Cache Storage without exposing cached URLs or values. */
+  public async diagnoseCaches(now = Date.now()): Promise<CacheDiagnostic[]> {
+    const diagnostics: CacheDiagnostic[] = [];
+    for (const [type, config] of this.cacheConfigs) {
+      const cache = await caches.open(config.name);
+      const keys = await cache.keys();
+      let staleEntries = 0;
+      let entriesWithoutTimestamp = 0;
+      let oldestAgeMs: number | null = null;
+
+      for (const request of keys) {
+        const response = await cache.match(request);
+        const cachedAt = response?.headers.get('sw-cached-at');
+        const timestamp = cachedAt === null || cachedAt === undefined ? NaN : Number(cachedAt);
+        if (!Number.isFinite(timestamp) || timestamp <= 0 || timestamp > now) {
+          entriesWithoutTimestamp++;
+          continue;
+        }
+        const age = now - timestamp;
+        oldestAgeMs = oldestAgeMs === null ? age : Math.max(oldestAgeMs, age);
+        if (age > config.maxAge * 1000) staleEntries++;
+      }
+
+      diagnostics.push({
+        type,
+        entries: keys.length,
+        staleEntries,
+        entriesWithoutTimestamp,
+        oldestAgeMs,
+        recommendation: staleEntries
+          ? 'Remove entries past the configured max age and let the app fetch them again.'
+          : entriesWithoutTimestamp
+            ? 'Inspect entries without freshness evidence; the automatic repair leaves them untouched.'
+            : 'No stale cache entries detected.',
+      });
+    }
+    return diagnostics;
+  }
+
+  /** Remove only entries proven stale by the cache's configured max age. */
+  public async repairStaleCacheEntries(type?: string, now = Date.now()): Promise<number> {
+    const configs = type
+      ? [[type, this.cacheConfigs.get(type)] as const]
+      : Array.from(this.cacheConfigs.entries());
+    let removed = 0;
+    for (const [cacheType, config] of configs) {
+      if (!config) continue;
+      const cache = await caches.open(config.name);
+      for (const request of await cache.keys()) {
+        const response = await cache.match(request);
+        const cachedAt = response?.headers.get('sw-cached-at');
+        const timestamp = cachedAt === null || cachedAt === undefined ? NaN : Number(cachedAt);
+        if (Number.isFinite(timestamp) && timestamp > 0 && timestamp <= now && now - timestamp > config.maxAge * 1000) {
+          if (await cache.delete(request)) {
+            this.lruOrder.delete(`${cacheType}:${request.url}`);
+            removed++;
+          }
+        }
+      }
+    }
+    return removed;
   }
 
   private async cleanupCache(cacheName: string, maxEntries: number): Promise<void> {

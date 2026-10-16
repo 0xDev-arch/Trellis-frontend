@@ -34,6 +34,8 @@ import {
   duplicateRequestRate,
 } from '@/lib/idempotency';
 import { useApiMetricsStore } from '@/store/apiMetricsStore';
+import { DeadLetterPanel } from './DeadLetterPanel';
+import CacheManager, { type CacheDiagnostic } from '@/lib/cache-manager';
 
 const MINUTE_MS = 60 * 1000;
 
@@ -96,6 +98,9 @@ export default function OperationsDashboardPage() {
   const [ruleError, setRuleError] = useState<string | null>(null);
   const [metricSamples, setMetricSamples] = useState<OperationalMetricSample[]>([]);
   const [metricConnection, setMetricConnection] = useState<MetricConnectionStatus>('connecting');
+  const [cacheDiagnostics, setCacheDiagnostics] = useState<CacheDiagnostic[] | null>(null);
+  const [cacheRepairing, setCacheRepairing] = useState(false);
+  const [cacheRepairMessage, setCacheRepairMessage] = useState<string | null>(null);
 
   const exceptionEvents = useApiMetricsStore((state) => state.exceptionEvents);
   const alertRules = useApiMetricsStore((state) => state.alertRules);
@@ -104,6 +109,8 @@ export default function OperationsDashboardPage() {
   const removeAlertRule = useApiMetricsStore((state) => state.removeAlertRule);
   const idempotency = useApiMetricsStore((state) => state.idempotency);
   const idempotencyEvents = useApiMetricsStore((state) => state.idempotencyEvents);
+  const abuse = useApiMetricsStore((state) => state.abuse);
+  const abuseEvents = useApiMetricsStore((state) => state.abuseEvents);
 
   useEffect(() => {
     setMounted(true);
@@ -111,6 +118,28 @@ export default function OperationsDashboardPage() {
     const timer = window.setInterval(() => setNow(Date.now()), 30 * 1000);
     return () => window.clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    CacheManager.getInstance().diagnoseCaches()
+      .then((diagnostics) => { if (!cancelled) setCacheDiagnostics(diagnostics); })
+      .catch(() => { if (!cancelled) setCacheDiagnostics([]); });
+    return () => { cancelled = true; };
+  }, []);
+
+  const repairStaleCaches = async () => {
+    setCacheRepairing(true);
+    setCacheRepairMessage(null);
+    try {
+      const removed = await CacheManager.getInstance().repairStaleCacheEntries();
+      setCacheRepairMessage(`${removed} stale cache ${removed === 1 ? 'entry' : 'entries'} removed from this browser.`);
+      setCacheDiagnostics(await CacheManager.getInstance().diagnoseCaches());
+    } catch {
+      setCacheRepairMessage('Cache repair could not complete in this browser.');
+    } finally {
+      setCacheRepairing(false);
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -372,6 +401,33 @@ export default function OperationsDashboardPage() {
           </div>
         </section>
 
+        <section aria-labelledby="cache-diagnostics-heading" className="mb-10 rounded-lg border border-trellis-vine/30 bg-trellis-vine/10 p-5">
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div>
+              <h2 id="cache-diagnostics-heading" className="text-2xl font-bold">Cache freshness</h2>
+              <p className="mt-1 max-w-3xl text-sm text-gray-400">
+                Evidence covers Cache Storage in this browser only. URLs and cached values are not displayed; this does not measure remote users or the search index.
+              </p>
+            </div>
+            <button type="button" onClick={repairStaleCaches} disabled={cacheRepairing || !cacheDiagnostics?.some((item) => item.staleEntries > 0)} className="rounded border border-trellis-leaf px-3 py-2 text-sm font-semibold text-trellis-leaf disabled:cursor-not-allowed disabled:opacity-50">
+              {cacheRepairing ? 'Removing stale entries…' : 'Remove stale entries'}
+            </button>
+          </div>
+          {cacheDiagnostics === null ? <p className="mt-4 text-sm text-gray-300" role="status">Inspecting local caches…</p> : (
+            <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              {cacheDiagnostics.map((item) => (
+                <article key={item.type} className="rounded border border-white/10 bg-black/10 p-3">
+                  <h3 className="font-semibold">{item.type}</h3>
+                  <p className="mt-2 text-sm text-gray-300">{item.staleEntries} stale / {item.entries} entries</p>
+                  <p className="text-sm text-gray-400">{item.entriesWithoutTimestamp} without freshness evidence</p>
+                  <p className="mt-2 text-xs text-gray-400">{item.recommendation}</p>
+                </article>
+              ))}
+            </div>
+          )}
+          {cacheRepairMessage && <p className="mt-3 text-sm text-gray-300" role="status">{cacheRepairMessage}</p>}
+        </section>
+
         {error && <p role="alert" className="rounded-lg border border-red-500/50 bg-red-500/10 p-4 text-red-200">{error}</p>}
         {!health && !error && <p aria-live="polite" className="text-gray-300">Loading operational health...</p>}
 
@@ -583,6 +639,72 @@ export default function OperationsDashboardPage() {
           </div>
         </section>
 
+        <section aria-labelledby="abuse-heading" className="mt-10" data-testid="abuse-telemetry">
+          <h2 id="abuse-heading" className="text-2xl font-bold">Risk-scored abuse detection</h2>
+          <p className="mt-1 text-sm text-gray-400">
+            Real-time evaluation of high-impact protocol operations (transfers, claims, mints, governance). Evaluates velocity, failure rates, large volumes, and network anomaly signals.
+          </p>
+
+          <dl className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+            {[
+              { label: 'Total evaluations', value: abuse.totalEvaluations, color: 'text-white' },
+              { label: 'Low-risk allowed', value: abuse.lowRiskAllowed, color: 'text-green-300' },
+              { label: 'Step-up challenges', value: abuse.stepUpChallenges, color: 'text-yellow-300' },
+              { label: 'Quarantined reviews', value: abuse.quarantinedReviews, color: 'text-orange-300' },
+              { label: 'Critical blocks', value: abuse.criticalBlocks, color: 'text-red-300' },
+            ].map((item) => (
+              <div key={item.label} className="rounded-lg border border-trellis-vine/30 bg-trellis-vine/10 p-4">
+                <dt className="text-sm text-gray-300">{item.label}</dt>
+                <dd className={`mt-1 text-2xl font-bold ${item.color}`}>{item.value}</dd>
+              </div>
+            ))}
+          </dl>
+
+          <div className="mt-6 rounded-lg border border-trellis-vine/30 bg-trellis-vine/10 p-5">
+            <h3 className="text-lg font-semibold mb-3">Recent risk-scored activity</h3>
+            {abuseEvents.length === 0 ? (
+              <p className="text-sm text-gray-400">No high-risk operations evaluated in this session yet.</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="min-w-full divide-y divide-trellis-vine/20 text-left text-sm">
+                  <thead>
+                    <tr className="text-gray-400">
+                      <th className="py-2 pr-4 font-semibold">Time</th>
+                      <th className="py-2 pr-4 font-semibold">Operation</th>
+                      <th className="py-2 pr-4 font-semibold">Actor</th>
+                      <th className="py-2 pr-4 font-semibold">Risk score</th>
+                      <th className="py-2 pr-4 font-semibold">Action</th>
+                      <th className="py-2 font-semibold">Primary signals</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-trellis-vine/10">
+                    {abuseEvents.slice(-10).reverse().map((ev, idx) => (
+                      <tr key={`${ev.timestamp}-${idx}`} className="text-gray-300">
+                        <td className="py-2 pr-4 text-xs font-mono">{new Date(ev.timestamp).toLocaleTimeString()}</td>
+                        <td className="py-2 pr-4 font-mono text-trellis-leaf">{ev.operation}</td>
+                        <td className="py-2 pr-4 font-mono text-xs">{ev.actorId}</td>
+                        <td className="py-2 pr-4">
+                          <span className={`inline-block rounded px-2 py-0.5 text-xs font-bold ${ev.riskScore >= 70 ? 'bg-red-500/20 text-red-300' : ev.riskScore >= 40 ? 'bg-yellow-500/20 text-yellow-300' : 'bg-green-500/20 text-green-300'}`}>
+                            {ev.riskScore} / 100
+                          </span>
+                        </td>
+                        <td className="py-2 pr-4">
+                          <span className={`capitalize font-semibold text-xs ${ev.action === 'block' ? 'text-red-400' : ev.action === 'review' ? 'text-orange-400' : ev.action === 'step_up' ? 'text-yellow-400' : 'text-green-400'}`}>
+                            {ev.action.replace('_', ' ')}
+                          </span>
+                        </td>
+                        <td className="py-2 text-xs text-gray-400">
+                          {ev.signals.length === 0 ? 'Normal activity' : ev.signals.map(s => s.code).join(', ')}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </section>
+
         <section aria-labelledby="rules-heading" className="mt-10">
           <h2 id="rules-heading" className="text-2xl font-bold">Alert rules</h2>
           <p className="mt-1 text-sm text-gray-400">
@@ -703,6 +825,7 @@ export default function OperationsDashboardPage() {
           </div>
         </section>
       </div>
+        <div className="mx-auto max-w-6xl"><DeadLetterPanel /></div>
     </main>
   );
 }

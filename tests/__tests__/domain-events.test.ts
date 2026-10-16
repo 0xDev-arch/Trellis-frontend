@@ -31,6 +31,7 @@ import {
   type LegacyDomainEventContext,
   type RegisteredEventName,
 } from '../../lib/domain-events';
+import { DeadLetterQueue, computeBackoffMs } from '../../lib/domain-events';
 import {
   OFFLINE_QUEUE_CHANGE_EVENT,
   OFFLINE_QUEUE_SYNCED_EVENT,
@@ -1344,5 +1345,126 @@ describe('Trellis domain event contract', () => {
         expect(result.reason).toBe('unknown-event');
       }
     });
+  });
+});
+
+describe('consumer retry and dead letter queue', () => {
+  const flush = async () => {
+    for (let i = 0; i < 10; i += 1) await Promise.resolve();
+  };
+
+  const NAME = 'THEME_MUTATED' as RegisteredEventName;
+
+  function setup(handler: jest.Mock, extra: Record<string, unknown> = {}) {
+    const target = new EventTarget();
+    const dlq = new DeadLetterQueue(null);
+    const timers: Array<{ run: () => void; delay: number }> = [];
+    const unsubscribe = subscribeDomainEvent(NAME, handler, {
+      target,
+      deadLetterQueue: dlq,
+      scheduler: (run, delay) => timers.push({ run, delay }),
+      ...extra,
+    });
+    const validEvent = () => {
+      const def = getDomainEventDefinition(NAME) as AnyDomainEventDefinition;
+      return def;
+    };
+    return { target, dlq, timers, unsubscribe, validEvent };
+  }
+
+  function dispatchFixture(target: EventTarget, name: RegisteredEventName) {
+    publishDomainEvent(name, { mode: 'dark' } as never, {
+      delivery: createWindowDelivery(target),
+      source: 'dlq-test',
+    });
+  }
+
+  it('computes 2s, 4s, 8s backoff', () => {
+    expect([1, 2, 3].map((n) => computeBackoffMs(n))).toEqual([2000, 4000, 8000]);
+  });
+
+  it('retries with exponential backoff then captures in the DLQ', async () => {
+    const handler = jest.fn(() => {
+      throw new Error('service down');
+    });
+    const { target, dlq, timers } = setup(handler);
+    dispatchFixture(target, NAME);
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(timers.map((t) => t.delay)).toEqual([2000]);
+
+    for (const expected of [4000, 8000]) {
+      await Promise.resolve();
+      timers[timers.length - 1].run();
+      await flush();
+      expect(timers[timers.length - 1].delay).toBe(expected);
+    }
+    timers[timers.length - 1].run();
+    await flush();
+
+    expect(handler).toHaveBeenCalledTimes(4);
+    expect(timers.map((t) => t.delay)).toEqual([2000, 4000, 8000]);
+    const [entry] = dlq.list();
+    expect(dlq.list()).toHaveLength(1);
+    expect(entry.error).toBe('service down');
+    expect(entry.attempts).toBe(4);
+    expect(entry.eventName).toBe(NAME);
+  });
+
+  it('does not touch the DLQ when a retry succeeds', async () => {
+    const handler = jest.fn().mockRejectedValueOnce(new Error('blip')).mockResolvedValue(undefined);
+    const { target, dlq, timers } = setup(handler);
+    dispatchFixture(target, NAME);
+    await flush();
+    timers[0].run();
+    await flush();
+
+    expect(handler).toHaveBeenCalledTimes(2);
+    expect(dlq.list()).toHaveLength(0);
+  });
+
+  it('honours a custom retry policy', async () => {
+    const handler = jest.fn(() => {
+      throw new Error('x');
+    });
+    const { target, dlq, timers } = setup(handler, { retry: { maxRetries: 0 } });
+    dispatchFixture(target, NAME);
+    await flush();
+
+    expect(timers).toHaveLength(0);
+    expect(dlq.list()).toHaveLength(1);
+  });
+
+  it('replays a DLQ entry through the live subscriber and removes it', async () => {
+    const handler = jest.fn(() => {
+      throw new Error('x');
+    });
+    const { target, dlq } = setup(handler, { retry: { maxRetries: 0 } });
+    dispatchFixture(target, NAME);
+    await flush();
+    const [entry] = dlq.list();
+
+    handler.mockImplementation(() => undefined);
+    const result = await dlq.replay(entry.id);
+
+    expect(result.ok).toBe(true);
+    expect(dlq.list()).toHaveLength(0);
+    expect(handler).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps the entry when replay has no subscriber', async () => {
+    const dlq = new DeadLetterQueue(null);
+    const entry = dlq.capture({
+      subscriber: 'gone',
+      eventName: NAME,
+      version: '1.0.0',
+      envelope: {},
+      error: 'x',
+      attempts: 4,
+    });
+    const result = await dlq.replay(entry.id);
+
+    expect(result.ok).toBe(false);
+    expect(dlq.list()).toHaveLength(1);
   });
 });

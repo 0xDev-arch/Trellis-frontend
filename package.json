@@ -19,11 +19,14 @@
     "dr:validate": "node scripts/validate-domain-invariants.mjs",
     "monitor:invariants": "tsx scripts/monitor-invariants.ts",
     "validate:events": "tsx scripts/validate-domain-events.ts",
+    "drill:verify": "node scripts/incident-drill.mjs",
     "telemetry:ws": "node scripts/telemetry-ws-server.mjs",
     "analyze": "source-map-explorer .next/static/**/*.js",
     "analyze:budget": "node scripts/check-bundle-budget.mjs",
+    "test:resource-budgets": "node scripts/check-resource-budgets.mjs",
     "storybook": "storybook dev -p 6006",
-    "build-storybook": "storybook build"
+    "build-storybook": "storybook build",
+    "monitor:journey": "tsx scripts/synthetic-journey-monitor.ts"
   },
   "dependencies": {
     "@asteasolutions/zod-to-openapi": "^6.4.0",
