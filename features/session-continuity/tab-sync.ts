@@ -39,7 +39,7 @@ export type SessionSyncMessage = DomainEventEnvelope<unknown> & {
 /** Payload type for a specific session event, as enforced by the catalog. */
 export type SessionSyncPayload<TName extends SessionSyncEventName> = EventPayloadFor<TName>;
 
-/** Identifies this tab so echoed messages can be ignored. */
+/** Identifies this tab,so echoed messages can be ignored. */
 function defaultSource(): string {
   const cryptoRef = globalThis.crypto as Crypto | undefined;
 
@@ -58,11 +58,11 @@ function defaultSource(): string {
  * `null` channel makes delivery a no-op, which is what lets the envelope be
  * built and validated without broadcasting it.
  */
-export function createSessionSyncMessage<TName extends SessionSyncEventName>(
-  event: TName,
-  payload: SessionSyncPayload<TName>,
+export function createSessionSyncMessage<TPage extends SessionSyncEventName>(
+  event: TPage,
+  payload: SessionSyncPayload<TPage>,
   source: string,
-): DomainEventEnvelope<SessionSyncPayload<TName>> {
+): DomainEventEnvelope<SessionSyncPayload<TPage>> {
   return publishDomainEvent(event, payload, {
     delivery: createBroadcastDelivery(null),
     source,
