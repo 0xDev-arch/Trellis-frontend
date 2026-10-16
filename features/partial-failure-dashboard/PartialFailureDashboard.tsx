@@ -285,6 +285,7 @@ export function PartialFailureDashboard() {
       {message && (
         <div
           role="alert"
+          aria-live={message.type === 'error' ? 'assertive' : 'polite'}
           className={`rounded-md border p-3 text-sm ${
             message.type === 'success'
               ? 'border-green-500/50 bg-green-500/10 text-green-200'
@@ -410,19 +411,21 @@ export function PartialFailureDashboard() {
         <div className="grid grid-cols-12 gap-2 border-b border-trellis-vine/30 p-3 text-xs uppercase tracking-wide text-gray-400">
           <button
             type="button"
-            className="col-span-2 flex items-center gap-1 hover:text-white focus:outline-none"
+            aria-sort={sortField === 'createdAt' ? (sortOrder === 'asc' ? 'ascending' : 'descending') : 'none'}
+            className="col-span-2 flex items-center gap-1 hover:text-white focus:outline-none focus:ring-2 focus:ring-trellis-leaf rounded"
             onClick={() => handleSort('createdAt')}
           >
             Created
-            {sortField === 'createdAt' && <span>{sortOrder === 'asc' ? '↑' : '↓'}</span>}
+            {sortField === 'createdAt' && <span aria-hidden="true">{sortOrder === 'asc' ? '↑' : '↓'}</span>}
           </button>
           <button
             type="button"
-            className="col-span-2 flex items-center gap-1 hover:text-white focus:outline-none"
+            aria-sort={sortField === 'severity' ? (sortOrder === 'asc' ? 'ascending' : 'descending') : 'none'}
+            className="col-span-2 flex items-center gap-1 hover:text-white focus:outline-none focus:ring-2 focus:ring-trellis-leaf rounded"
             onClick={() => handleSort('severity')}
           >
             Severity
-            {sortField === 'severity' && <span>{sortOrder === 'asc' ? '↑' : '↓'}</span>}
+            {sortField === 'severity' && <span aria-hidden="true">{sortOrder === 'asc' ? '↑' : '↓'}</span>}
           </button>
           <div className="col-span-2">Type</div>
           <div className="col-span-3">Operation ID</div>
@@ -471,6 +474,7 @@ export function PartialFailureDashboard() {
                       type="button"
                       className="rounded border border-trellis-vine/60 px-2 py-1 text-xs text-white hover:bg-trellis-vine/20 focus:outline-none focus:ring-2 focus:ring-trellis-leaf"
                       aria-expanded={expanded === failure.id}
+                      aria-controls={`failure-details-${failure.id}`}
                       onClick={() => setExpanded(expanded === failure.id ? null : failure.id)}
                     >
                       {expanded === failure.id ? 'Hide' : 'Inspect'}
@@ -498,7 +502,12 @@ export function PartialFailureDashboard() {
 
                 {/* Expanded Details */}
                 {expanded === failure.id && (
-                  <div className="mt-3 space-y-3 rounded-lg bg-black/40 p-4">
+                  <div
+                    id={`failure-details-${failure.id}`}
+                    role="region"
+                    aria-label={`Details for ${failure.operationId}`}
+                    className="mt-3 space-y-3 rounded-lg bg-black/40 p-4"
+                  >
                     <div className="grid gap-4 sm:grid-cols-2">
                       <div>
                         <p className="text-xs text-gray-400">Status</p>
