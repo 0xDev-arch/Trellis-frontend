@@ -470,22 +470,31 @@ class PWAManager {
         this.swRegistration = registration;
         console.log('[PWA] Service worker registered successfully');
 
-        // Listen for updates
-        registration.addEventListener('updatefound', () => {
-          const newWorker = registration.installing;
-          if (newWorker) {
-            newWorker.addEventListener('statechange', () => {
-              if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
-                // New content is available
-                this.onServiceWorkerUpdate();
+        if (registration) {
+          // Check if an updated worker is already waiting
+          if (registration.waiting && navigator.serviceWorker.controller) {
+            this.onServiceWorkerUpdate();
+          }
+
+          // Listen for updates
+          if (typeof registration.addEventListener === 'function') {
+            registration.addEventListener('updatefound', () => {
+              const newWorker = registration.installing;
+              if (newWorker && typeof newWorker.addEventListener === 'function') {
+                newWorker.addEventListener('statechange', () => {
+                  if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+                    // New content is available
+                    this.onServiceWorkerUpdate();
+                  }
+                });
               }
             });
           }
-        });
 
-        // Check for existing updates
-        if (registration.active) {
-          registration.active.postMessage({ type: 'CHECK_UPDATE' });
+          // Check for existing updates
+          if (registration.active) {
+            registration.active.postMessage({ type: 'CHECK_UPDATE' });
+          }
         }
 
       } catch (error) {
@@ -561,6 +570,19 @@ class PWAManager {
   }
 
   public async skipWaiting(): Promise<void> {
+    if (!this.swRegistration?.waiting) {
+      if (typeof window !== 'undefined' && 'serviceWorker' in navigator && typeof navigator.serviceWorker.getRegistration === 'function') {
+        try {
+          const reg = await navigator.serviceWorker.getRegistration();
+          if (reg?.waiting) {
+            this.swRegistration = reg;
+          }
+        } catch {
+          // ignore
+        }
+      }
+    }
+
     if (!this.swRegistration || !this.swRegistration.waiting) {
       console.log('[PWA] No waiting service worker found');
       return;
@@ -572,6 +594,14 @@ class PWAManager {
     } catch (error) {
       console.error('[PWA] Error sending skip waiting message:', error);
     }
+  }
+
+  public getRegistration(): ServiceWorkerRegistration | null {
+    return this.swRegistration;
+  }
+
+  public hasWaitingWorker(): boolean {
+    return Boolean(this.swRegistration?.waiting);
   }
 
   public isInstallPromptAvailable(): boolean {
