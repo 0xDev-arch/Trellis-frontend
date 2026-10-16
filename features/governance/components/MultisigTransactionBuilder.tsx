@@ -239,8 +239,9 @@ export function MultisigTransactionBuilder({
           </p>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
-              <label className="block text-xs text-gray-300 mb-1">Destination Account (G...)</label>
+              <label htmlFor="multisig-dest" className="block text-xs text-gray-300 mb-1">Destination Account (G...)</label>
               <input
+                id="multisig-dest"
                 type="text"
                 placeholder="G..."
                 className="w-full rounded-lg bg-black/50 border border-gray-700 px-3 py-1.5 text-xs font-mono text-white focus:border-indigo-400 outline-none"
@@ -249,8 +250,9 @@ export function MultisigTransactionBuilder({
               />
             </div>
             <div>
-              <label className="block text-xs text-gray-300 mb-1">Amount (XLM)</label>
+              <label htmlFor="multisig-amount" className="block text-xs text-gray-300 mb-1">Amount (XLM)</label>
               <input
+                id="multisig-amount"
                 type="number"
                 placeholder="e.g. 5000"
                 className="w-full rounded-lg bg-black/50 border border-gray-700 px-3 py-1.5 text-xs text-white focus:border-indigo-400 outline-none"
@@ -260,8 +262,9 @@ export function MultisigTransactionBuilder({
             </div>
           </div>
           <div>
-            <label className="block text-xs text-gray-300 mb-1">Memo (Optional)</label>
+            <label htmlFor="multisig-memo" className="block text-xs text-gray-300 mb-1">Memo (Optional)</label>
             <input
+              id="multisig-memo"
               type="text"
               placeholder="e.g. Dev grant disbursement"
               className="w-full rounded-lg bg-black/50 border border-gray-700 px-3 py-1.5 text-xs text-white focus:border-indigo-400 outline-none"
@@ -281,10 +284,11 @@ export function MultisigTransactionBuilder({
 
       {/* Transaction Envelope (XDR) Input */}
       <div>
-        <label className="block text-xs font-semibold uppercase tracking-wider text-gray-400 mb-1.5">
+        <label htmlFor="multisig-envelope-xdr" className="block text-xs font-semibold uppercase tracking-wider text-gray-400 mb-1.5">
           Transaction Envelope XDR
         </label>
         <textarea
+          id="multisig-envelope-xdr"
           aria-label="Transaction envelope XDR"
           className="w-full rounded-lg border border-gray-700 bg-black/60 p-3 font-mono text-xs text-gray-300 focus:border-indigo-500 outline-none transition-colors"
           rows={3}
@@ -332,7 +336,7 @@ export function MultisigTransactionBuilder({
             className="h-2.5 rounded-full bg-gray-800 overflow-hidden"
           >
             <div
-              className={`h-full transition-all duration-300 ${
+              className={`h-full transition-all duration-300 motion-reduce:transition-none ${
                 progress.isComplete ? 'bg-emerald-500' : 'bg-gradient-to-r from-amber-500 to-indigo-500'
               }`}
               style={{ width: `${pct}%` }}
@@ -475,12 +479,12 @@ export function MultisigTransactionBuilder({
 
       {/* Alerts */}
       {error && (
-        <div role="alert" className="p-3 rounded-lg bg-red-950/40 border border-red-500/40 text-red-200 text-xs">
+        <div role="alert" aria-live="assertive" className="p-3 rounded-lg bg-red-950/40 border border-red-500/40 text-red-200 text-xs">
           ✕ {error}
         </div>
       )}
       {successMsg && (
-        <div role="status" className="p-3 rounded-lg bg-emerald-950/40 border border-emerald-500/40 text-emerald-200 text-xs">
+        <div role="status" aria-live="polite" className="p-3 rounded-lg bg-emerald-950/40 border border-emerald-500/40 text-emerald-200 text-xs">
           ✓ {successMsg}
         </div>
       )}
