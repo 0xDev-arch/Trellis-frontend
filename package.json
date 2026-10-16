@@ -19,6 +19,7 @@
     "dr:validate": "node scripts/validate-domain-invariants.mjs",
     "monitor:invariants": "tsx scripts/monitor-invariants.ts",
     "validate:events": "tsx scripts/validate-domain-events.ts",
+    "drill:verify": "node scripts/incident-drill.mjs",
     "telemetry:ws": "node scripts/telemetry-ws-server.mjs",
     "analyze": "source-map-explorer .next/static/**/*.js",
     "analyze:budget": "node scripts/check-bundle-budget.mjs",
